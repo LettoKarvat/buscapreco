@@ -59,8 +59,8 @@ const mockProducts: Record<string, Product> = {
 };
 
 /* ---------- constantes ---------- */
-const RESET_DELAY_MS = 15000; // limpa produto/erro e mantém foco
-const FOCUS_CHECK_MS = 2000; // verifica foco a cada 2 s
+const RESET_DELAY_MS = 15000; // 15 s
+const FOCUS_CHECK_MS = 2000; // 2 s
 
 function App() {
   const [barcode, setBarcode] = useState("");
@@ -69,19 +69,34 @@ function App() {
   const [error, setError] = useState("");
   const [history, setHistory] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const resetTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  /* ---------- busca ---------- */
+  /* ---- limpa e reinicia o reset timer ---- */
+  const startResetTimer = () => {
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+    resetTimerRef.current = setTimeout(() => {
+      setProduct(null);
+      setError("");
+      setBarcode("");
+      inputRef.current?.focus();
+    }, RESET_DELAY_MS);
+  };
+
+  /* ---- BUSCA ---- */
   const handleSearch = async () => {
     if (!barcode.trim()) {
       setError("Por favor, insira um código de barras");
       return;
     }
 
+    /* ⚠️ cancela qualquer timer ativo ao iniciar nova busca */
+    if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+
     setLoading(true);
     setError("");
     setProduct(null);
 
-    await new Promise((r) => setTimeout(r, 700)); // mock latência
+    await new Promise((r) => setTimeout(r, 700)); // mock delay
 
     const found = mockProducts[barcode];
     if (found) {
@@ -93,45 +108,34 @@ function App() {
       setError("Produto não encontrado. Verifique o código de barras.");
     }
 
-    /* limpa input imediatamente para novo scan */
+    /* limpa input p/ próxima leitura */
     setBarcode("");
     setLoading(false);
     inputRef.current?.focus();
   };
 
-  /* busca automática quando chega a 13 dígitos */
+  /* busca automática (13 dígitos) */
   useEffect(() => {
     if (barcode.length === 13 && !loading) handleSearch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [barcode]);
 
-  /* reset 15 s depois de exibir item/erro */
+  /* inicia/renova timer assim que há produto ou erro na tela e não está carregando */
   useEffect(() => {
-    if (!product && !error) return;
-    const t = setTimeout(() => {
-      setProduct(null);
-      setError("");
-      inputRef.current?.focus();
-    }, RESET_DELAY_MS);
-    return () => clearTimeout(t);
-  }, [product, error]);
+    if (!loading && (product || error)) startResetTimer();
+  }, [product, error, loading]);
 
-  /* garante foco; se não conseguir focar por 2 tentativas, recarrega */
+  /* garante foco permanente */
   useEffect(() => {
-    let attempts = 0;
     const id = setInterval(() => {
       if (inputRef.current && document.activeElement !== inputRef.current) {
         inputRef.current.focus();
-        attempts += 1;
-        if (attempts >= 2) window.location.reload();
-      } else {
-        attempts = 0; // foco recuperado
       }
     }, FOCUS_CHECK_MS);
     return () => clearInterval(id);
   }, []);
 
-  /* helpers visuais */
+  /* helpers */
   const availabilityColor = (a: string) =>
     ({
       "in-stock": "text-emerald-600 bg-emerald-50",
@@ -150,7 +154,7 @@ function App() {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-emerald-50">
       {/* header */}
       <header className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-40 border-b border-blue-100">
-        <div className="max-w-4xl mx-auto px-4 py-4 flex justify-center space-x-3">
+        <div className="max-w-4xl mx-auto px-4 py-4 flex justify-center gap-3">
           <div className="p-2 bg-blue-600 rounded-lg">
             <Barcode className="w-6 h-6 text-white" />
           </div>
@@ -161,7 +165,7 @@ function App() {
       </header>
 
       <main className="max-w-4xl mx-auto px-4 py-8">
-        {/* card de busca */}
+        {/* card busca */}
         <div className="bg-white rounded-2xl shadow-lg p-6 mb-8 border border-blue-100">
           <label
             htmlFor="barcode"
@@ -187,7 +191,7 @@ function App() {
           <button
             onClick={handleSearch}
             disabled={loading}
-            className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center space-x-2"
+            className="w-full bg-blue-600 text-white py-3 rounded-lg font-semibold hover:bg-blue-700 transition disabled:opacity-50 flex items-center justify-center gap-2"
           >
             {loading ? (
               <>
@@ -225,9 +229,9 @@ function App() {
 
         {/* erro */}
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-8 flex items-center space-x-3">
+          <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-8 flex items-center gap-3">
             <AlertCircle className="w-5 h-5 text-red-600" />
-            <p className="text-red-700 font-medium">{error}</p>
+            <span className="text-red-700 font-medium">{error}</span>
           </div>
         )}
 
