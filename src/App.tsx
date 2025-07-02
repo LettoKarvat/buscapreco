@@ -313,6 +313,13 @@ function App() {
           </div>
         )}
       </main>
+      {/* FOOTER */}
+      <footer className="bg-white/80 backdrop-blur-md border-t border-blue-100">
+        <div className="max-w-4xl mx-auto px-4 py-3 text-center text-sm text-gray-600 flex items-center justify-center gap-1">
+          Desenvolvido &nbsp;por&nbsp;
+          <span className="font-semibold text-blue-600">Inova&nbsp;Tec</span>
+        </div>
+      </footer>
     </div>
   );
 }
