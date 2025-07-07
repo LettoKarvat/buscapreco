@@ -1,3 +1,4 @@
+/* eslint-disable react-hooks/exhaustive-deps */
 import React, { useState, useEffect, useRef } from "react";
 import {
   Search,
@@ -8,7 +9,7 @@ import {
   CheckCircle,
 } from "lucide-react";
 
-/* ---------- interface + mock ---------- */
+/* ---------- tipos ---------- */
 interface Product {
   id: string;
   name: string;
@@ -17,52 +18,15 @@ interface Product {
   promotionalPrice?: number;
   brand: string;
   category: string;
-  image: string;
   availability: "in-stock" | "out-of-stock" | "limited";
 }
-const mockProducts: Record<string, Product> = {
-  "7891000100103": {
-    id: "7891000100103",
-    name: "Coca-Cola Original 350ml",
-    description: "Refrigerante Coca-Cola Original lata 350ml",
-    price: 4.99,
-    promotionalPrice: 3.99,
-    brand: "Coca-Cola",
-    category: "Bebidas",
-    image:
-      "https://images.pexels.com/photos/50593/coca-cola-cold-drink-soft-drink-coke-50593.jpeg?auto=compress&cs=tinysrgb&w=400",
-    availability: "in-stock",
-  },
-  "7891000055502": {
-    id: "7891000055502",
-    name: "Guaraná Antarctica 350ml",
-    description: "Refrigerante Guaraná Antarctica lata 350ml",
-    price: 4.5,
-    brand: "Antarctica",
-    category: "Bebidas",
-    image:
-      "https://images.pexels.com/photos/8919563/pexels-photo-8919563.jpeg?auto=compress&cs=tinysrgb&w=400",
-    availability: "in-stock",
-  },
-  "7891000244234": {
-    id: "7891000244234",
-    name: "Água Mineral Crystal 500ml",
-    description: "Água mineral natural Crystal garrafa 500ml",
-    price: 2.99,
-    promotionalPrice: 2.49,
-    brand: "Crystal",
-    category: "Bebidas",
-    image:
-      "https://images.pexels.com/photos/327090/pexels-photo-327090.jpeg?auto=compress&cs=tinysrgb&w=400",
-    availability: "limited",
-  },
-};
 
 /* ---------- constantes ---------- */
-const RESET_DELAY_MS = 15000; // 15 s
-const FOCUS_CHECK_MS = 2000; // 2 s
+const API_BASE = "https://53bb-206-84-60-250.ngrok-free.app";
+const RESET_DELAY_MS = 15_000;
+const FOCUS_CHECK_MS = 2_000;
 
-function App() {
+export default function App() {
   const [barcode, setBarcode] = useState("");
   const [product, setProduct] = useState<Product | null>(null);
   const [loading, setLoading] = useState(false);
@@ -71,7 +35,7 @@ function App() {
   const inputRef = useRef<HTMLInputElement>(null);
   const resetTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  /* ---- limpa e reinicia o reset timer ---- */
+  /* ---- limpa e reinicia o timer de reset ---- */
   const startResetTimer = () => {
     if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
     resetTimerRef.current = setTimeout(() => {
@@ -89,26 +53,31 @@ function App() {
       return;
     }
 
-    /* ⚠️ cancela qualquer timer ativo ao iniciar nova busca */
     if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
 
     setLoading(true);
     setError("");
     setProduct(null);
 
-    await new Promise((r) => setTimeout(r, 700)); // mock delay
+    try {
+      const resp = await fetch(`${API_BASE}/test-api/product/${barcode}`, {
+        headers: { "ngrok-skip-browser-warning": "true" },
+      });
 
-    const found = mockProducts[barcode];
-    if (found) {
-      setProduct(found);
+      if (!resp.ok) {
+        const { error } = await resp.json();
+        throw new Error(error || "Produto não encontrado");
+      }
+
+      const data: Product = await resp.json();
+      setProduct(data);
       setHistory((prev) =>
         [barcode, ...prev.filter((c) => c !== barcode)].slice(0, 5)
       );
-    } else {
-      setError("Produto não encontrado. Verifique o código de barras.");
+    } catch (err: any) {
+      setError(err.message || "Falha na busca do produto");
     }
 
-    /* limpa input p/ próxima leitura */
     setBarcode("");
     setLoading(false);
     inputRef.current?.focus();
@@ -117,15 +86,14 @@ function App() {
   /* busca automática (13 dígitos) */
   useEffect(() => {
     if (barcode.length === 13 && !loading) handleSearch();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [barcode]);
 
-  /* inicia/renova timer assim que há produto ou erro na tela e não está carregando */
+  /* reinicia timer quando há produto ou erro */
   useEffect(() => {
     if (!loading && (product || error)) startResetTimer();
   }, [product, error, loading]);
 
-  /* garante foco permanente */
+  /* garante foco permanente no input */
   useEffect(() => {
     const id = setInterval(() => {
       if (inputRef.current && document.activeElement !== inputRef.current) {
@@ -135,13 +103,14 @@ function App() {
     return () => clearInterval(id);
   }, []);
 
-  /* helpers */
+  /* helpers de estoque */
   const availabilityColor = (a: string) =>
     ({
       "in-stock": "text-emerald-600 bg-emerald-50",
       limited: "text-orange-600 bg-orange-50",
       "out-of-stock": "text-red-600 bg-red-50",
     }[a] || "text-gray-600 bg-gray-50");
+
   const availabilityText = (a: string) =>
     ({
       "in-stock": "Em estoque",
@@ -154,13 +123,20 @@ function App() {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-emerald-50">
       {/* header */}
       <header className="bg-white/80 backdrop-blur-md shadow-sm sticky top-0 z-40 border-b border-blue-100">
-        <div className="max-w-4xl mx-auto px-4 py-4 flex justify-center gap-3">
-          <div className="p-2 bg-blue-600 rounded-lg">
-            <Barcode className="w-6 h-6 text-white" />
+        <div className="max-w-6xl mx-auto px-6 py-8 flex flex-col items-center">
+          <img
+            src="https://iili.io/F0MLICg.png"
+            alt="Supermercado São Geraldo"
+            className="h-24 md:h-32 w-auto"
+          />
+          <div className="mt-6 flex items-center gap-3">
+            <div className="p-3 bg-blue-600 rounded-lg">
+              <Barcode className="w-7 h-7 text-white" />
+            </div>
+            <h1 className="text-3xl md:text-4xl font-bold text-gray-800">
+              Scanner de Produtos
+            </h1>
           </div>
-          <h1 className="text-2xl font-bold text-gray-800">
-            Scanner de Produtos
-          </h1>
         </div>
       </header>
 
@@ -238,92 +214,86 @@ function App() {
         {/* produto */}
         {product && (
           <div className="bg-white rounded-2xl shadow-lg overflow-hidden border border-blue-100 hover:shadow-xl">
-            <div className="md:flex">
-              <img
-                src={product.image}
-                alt={product.name}
-                className="md:w-1/3 w-full h-64 md:h-full object-cover"
-              />
-              <div className="md:w-2/3 p-6">
-                <div className="flex justify-between mb-4">
-                  <div>
-                    <h2 className="text-2xl font-bold text-gray-800 mb-2">
-                      {product.name}
-                    </h2>
-                    <p className="text-gray-600 mb-2">{product.description}</p>
-                    <div className="flex items-center gap-4 text-sm text-gray-500">
-                      <span className="font-medium">{product.brand}</span>
-                      <span>•</span>
-                      <span>{product.category}</span>
-                    </div>
-                  </div>
-                  <div
-                    className={`px-3 py-1 rounded-full text-sm font-medium ${availabilityColor(
-                      product.availability
-                    )}`}
-                  >
-                    {availabilityText(product.availability)}
+            <div className="p-6">
+              <div className="flex justify-between mb-4">
+                <div className="pr-4">
+                  {" "}
+                  {/* texto ocupa resto do espaço */}
+                  <h2 className="text-2xl font-bold text-gray-800 mb-2">
+                    {product.name}
+                  </h2>
+                  <p className="text-gray-600 mb-2">{product.description}</p>
+                  <div className="flex items-center gap-4 text-sm text-gray-500">
+                    <span className="font-medium">{product.brand}</span>
+                    <span>•</span>
+                    <span>{product.category}</span>
                   </div>
                 </div>
 
-                <div className="flex justify-between">
-                  <div className="text-right">
-                    {product.promotionalPrice ? (
-                      <>
-                        <p className="text-sm text-gray-500 line-through">
-                          R$ {product.price.toFixed(2)}
-                        </p>
-                        <p className="text-2xl font-bold text-emerald-600">
-                          R$ {product.promotionalPrice.toFixed(2)}
-                        </p>
-                        <p className="text-xs text-emerald-600 font-medium">
-                          Economia: R$
-                          {(product.price - product.promotionalPrice).toFixed(
-                            2
-                          )}
-                        </p>
-                      </>
-                    ) : (
-                      <p className="text-2xl font-bold text-gray-800">
+                {/* selo de estoque */}
+                <div
+                  className={`flex items-center justify-center w-20 h-20 rounded-full text-center text-xs font-semibold ${availabilityColor(
+                    product.availability
+                  )}`}
+                >
+                  {availabilityText(product.availability)}
+                </div>
+              </div>
+
+              <div className="flex justify-between">
+                <div className="text-right">
+                  {product.promotionalPrice ? (
+                    <>
+                      <p className="text-sm text-gray-500 line-through">
                         R$ {product.price.toFixed(2)}
                       </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-gray-500">
-                    <CheckCircle className="w-4 h-4 text-emerald-600" />
-                    <span>Código: {product.id}</span>
-                  </div>
-                </div>
-
-                {product.promotionalPrice && (
-                  <div className="mt-4 p-3 bg-emerald-50 rounded-lg border border-emerald-200">
-                    <p className="text-emerald-700 text-sm font-medium">
-                      🎉 Economia de{" "}
-                      {(
-                        ((product.price - product.promotionalPrice) /
-                          product.price) *
-                        100
-                      ).toFixed(0)}
-                      %
+                      <p className="text-2xl font-bold text-emerald-600">
+                        R$ {product.promotionalPrice.toFixed(2)}
+                      </p>
+                      <p className="text-xs text-emerald-600 font-medium">
+                        Economia: R$
+                        {(product.price - product.promotionalPrice).toFixed(2)}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-2xl font-bold text-gray-800">
+                      R$ {product.price.toFixed(2)}
                     </p>
-                  </div>
-                )}
+                  )}
+                </div>
+                <div className="flex items-center gap-2 text-sm text-gray-500">
+                  <CheckCircle className="w-4 h-4 text-emerald-600" />
+                  <span>Código: {product.id}</span>
+                </div>
               </div>
+
+              {product.promotionalPrice && (
+                <div className="mt-4 p-3 bg-emerald-50 rounded-lg border border-emerald-200">
+                  <p className="text-emerald-700 text-sm font-medium">
+                    🎉 Economia de{" "}
+                    {(
+                      ((product.price - product.promotionalPrice) /
+                        product.price) *
+                      100
+                    ).toFixed(0)}
+                    %
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         )}
       </main>
-      {/* FOOTER */}
+
+      {/* footer */}
       <footer className="bg-white/80 backdrop-blur-md border-t border-blue-100">
         <div className="max-w-4xl mx-auto px-4 py-3 text-center text-sm text-gray-600 flex items-center justify-center gap-1">
-          Desenvolvido &nbsp;por&nbsp;
+          Desenvolvido&nbsp;por&nbsp;
           <span className="font-semibold text-blue-600">
-            Faives Soluções e Tecnologias&nbsp;
+            Faives Soluções e Tecnologias
           </span>
         </div>
       </footer>
     </div>
   );
 }
-
-export default App;
