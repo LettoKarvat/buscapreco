@@ -18,6 +18,7 @@ interface Product {
   promotionalPrice?: number;
   brand: string;
   category: string;
+  availability: "in-stock" | "out-of-stock" | "limited";
 }
 
 /* ---------- constantes ---------- */
@@ -64,31 +65,12 @@ export default function App() {
       });
 
       if (!resp.ok) {
-        const { error: msg } = await resp.json();
-        throw new Error(msg || "Produto não encontrado");
+        const { error } = await resp.json();
+        throw new Error(error || "Produto não encontrado");
       }
 
-      const data: {
-        CODPROD: string;
-        DESCRICAO: string;
-        PRECO: number | null;
-        PRECOPROMO?: number | null;
-        MARCA: string;
-        CATEGORIA: string;
-      } = await resp.json();
-
-      const formatted: Product = {
-        id: data.CODPROD,
-        name: data.DESCRICAO,
-        description: data.DESCRICAO,
-        price: typeof data.PRECO === "number" ? data.PRECO : 0,
-        promotionalPrice:
-          typeof data.PRECOPROMO === "number" ? data.PRECOPROMO : undefined,
-        brand: data.MARCA ?? "",
-        category: data.CATEGORIA ?? "",
-      };
-
-      setProduct(formatted);
+      const data: Product = await resp.json();
+      setProduct(data);
       setHistory((prev) =>
         [barcode, ...prev.filter((c) => c !== barcode)].slice(0, 5)
       );
@@ -120,6 +102,21 @@ export default function App() {
     }, FOCUS_CHECK_MS);
     return () => clearInterval(id);
   }, []);
+
+  /* helpers de estoque */
+  const availabilityColor = (a: string) =>
+    ({
+      "in-stock": "text-emerald-600 bg-emerald-50",
+      limited: "text-orange-600 bg-orange-50",
+      "out-of-stock": "text-red-600 bg-red-50",
+    }[a] || "text-gray-600 bg-gray-50");
+
+  const availabilityText = (a: string) =>
+    ({
+      "in-stock": "Em estoque",
+      limited: "Estoque limitado",
+      "out-of-stock": "Fora de estoque",
+    }[a] || "Indisponível");
 
   /* ---------- UI ---------- */
   return (
@@ -220,6 +217,8 @@ export default function App() {
             <div className="p-6">
               <div className="flex justify-between mb-4">
                 <div className="pr-4">
+                  {" "}
+                  {/* texto ocupa resto do espaço */}
                   <h2 className="text-2xl font-bold text-gray-800 mb-2">
                     {product.name}
                   </h2>
@@ -231,12 +230,19 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* remove selo de estoque */}
+                {/* selo de estoque */}
+                <div
+                  className={`flex items-center justify-center w-20 h-20 rounded-full text-center text-xs font-semibold ${availabilityColor(
+                    product.availability
+                  )}`}
+                >
+                  {availabilityText(product.availability)}
+                </div>
               </div>
 
               <div className="flex justify-between">
                 <div className="text-right">
-                  {typeof product.promotionalPrice === "number" ? (
+                  {product.promotionalPrice ? (
                     <>
                       <p className="text-sm text-gray-500 line-through">
                         R$ {product.price.toFixed(2)}
@@ -261,7 +267,7 @@ export default function App() {
                 </div>
               </div>
 
-              {typeof product.promotionalPrice === "number" && (
+              {product.promotionalPrice && (
                 <div className="mt-4 p-3 bg-emerald-50 rounded-lg border border-emerald-200">
                   <p className="text-emerald-700 text-sm font-medium">
                     🎉 Economia de{" "}
