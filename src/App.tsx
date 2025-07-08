@@ -21,7 +21,7 @@ interface Product {
 }
 
 /* ---------- constantes ---------- */
-const API_BASE = "https://53bb-206-84-60-250.ngrok-free.app";
+const API_BASE = "https://e82457d65092.ngrok-free.app";
 const RESET_DELAY_MS = 15_000;
 const FOCUS_CHECK_MS = 2_000;
 
