@@ -65,7 +65,7 @@ export default function App() {
 
       if (!resp.ok) {
         const { error: msg } = await resp.json();
-        throw new Error(msg || "Produto não encontrado");
+        throw new Error("Produto não encontrado");
       }
 
       const data: {
@@ -159,6 +159,7 @@ export default function App() {
               type="text"
               value={barcode}
               onChange={(e) => setBarcode(e.target.value.trim())}
+              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
               placeholder="Digite ou escaneie"
               autoFocus
               disabled={loading}
@@ -231,7 +232,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* remove selo de estoque */}
+                {/* selo removido */}
               </div>
 
               <div className="flex justify-between">
@@ -282,7 +283,7 @@ export default function App() {
       {/* footer */}
       <footer className="bg-white/80 backdrop-blur-md border-t border-blue-100">
         <div className="max-w-4xl mx-auto px-4 py-3 text-center text-sm text-gray-600 flex items-center justify-center gap-1">
-          Desenvolvido&nbsp;por&nbsp;
+          Desenvolvido por
           <span className="font-semibold text-blue-600">
             Faives Soluções e Tecnologias
           </span>
