@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Busca Preço</string>
+    <string name="title_activity_main">ScannerProdutos</string>
+    <string name="package_name">com.faives.scannerprodutos</string>
+    <string name="custom_url_scheme">com.faives.scannerprodutos</string>
+</resources>
