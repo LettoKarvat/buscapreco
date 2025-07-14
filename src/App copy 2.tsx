@@ -26,15 +26,10 @@ interface Product {
   promotionalPrice?: number;
   brand: string;
   category: string;
-  imageUrl?: string | null;
 }
 
 /* ───────────── constantes ───────────── */
-// API para preços e nome
 const DEFAULT_API_BASE = "https://3e204be18720.ngrok-free.app";
-// API para scraping de imagem
-const IMAGE_API_BASE = "https://53bb-206-84-60-250.ngrok-free.app";
-
 const RESET_DELAY_MS = 15_000;
 const CONFIG_PASSWORD = "F@ives25";
 
@@ -88,7 +83,7 @@ export default function App() {
     localStorage.setItem("numregiao", numReg);
   }, [apiBase, filial, numReg]);
 
-  /* ─── 5. busca na API + busca de imagem ─── */
+  /* ─── 5. busca na API ─── */
   const apiSearch = useCallback(
     async (code: string) => {
       if (!code) return;
@@ -99,7 +94,6 @@ export default function App() {
       setProduct(null);
 
       try {
-        // 5.1 busca dados do produto
         const r = await fetch(
           `${apiBase}/test-api/product/price?codfilial=${filial}&numregiao=${numReg}&codauxiliar=${code}`,
           { headers: { "ngrok-skip-browser-warning": "true" } }
@@ -113,46 +107,24 @@ export default function App() {
           DESCRICAO: string;
           PRECO_VAREJO: number;
         } = await r.json();
-
-        const base: Product = {
+        setProduct({
           id: data.CODPROD,
           name: data.DESCRICAO,
           description: data.DESCRICAO,
           price: data.PRECO_VAREJO,
-          brand: "",
-          category: "",
-        };
-
-        // define produto sem imagem
-        setProduct(base);
+        });
         setHistory((prev) =>
           [code, ...prev.filter((c) => c !== code)].slice(0, 5)
         );
-
-        // 5.2 busca imagem no backend Flask
-        try {
-          const imgR = await fetch(
-            `${IMAGE_API_BASE}/test-api/scrape-image/${code}`,
-            { headers: { "ngrok-skip-browser-warning": "true" } }
-          );
-          if (imgR.ok) {
-            const { imageUrl } = await imgR.json();
-            setProduct((p) => (p ? { ...p, imageUrl } : p));
-          } else {
-            console.warn("Erro ao buscar imagem:", imgR.status);
-          }
-        } catch (ie) {
-          console.error("Falha fetch imagem:", ie);
-        }
       } catch (e: any) {
         setError(e.message || "Falha na busca");
-      } finally {
-        setLoading(false);
-        resetTimerRef.current = setTimeout(() => {
-          setProduct(null);
-          setError("");
-        }, RESET_DELAY_MS);
       }
+
+      setLoading(false);
+      resetTimerRef.current = setTimeout(() => {
+        setProduct(null);
+        setError("");
+      }, RESET_DELAY_MS);
     },
     [apiBase, filial, numReg]
   );
@@ -165,7 +137,7 @@ export default function App() {
     [apiSearch]
   );
 
-  /* ─── 6. listener do plugin ─── */
+  /* ─── 6. listener do plugin (liga laser no load) ─── */
   useEffect(() => {
     const sub = ScannerPlugin.addListener(
       "scan",
@@ -173,11 +145,12 @@ export default function App() {
     );
     return () => {
       sub.remove();
+      // desliga laser (se o plugin expôs stop)
       ScannerPlugin.stop?.().catch(() => {});
     };
   }, [processScan]);
 
-  /* ─── 7. fallback broadcast ─── */
+  /* ─── 7. fallback: broadcast + wedge ─── */
   useEffect(() => {
     const ip = (window as any)?.plugins?.intent;
     if (!ip?.setNewIntentHandler) return;
@@ -188,7 +161,6 @@ export default function App() {
     });
   }, [processScan]);
 
-  /* teclado físico */
   useEffect(() => {
     let buf = "";
     const onKey = (e: KeyboardEvent) => {
@@ -201,7 +173,7 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [processScan]);
 
-  /* ─── 8. foco permanente ─── */
+  /* ─── 8. foco no input invisível ─── */
   useEffect(() => {
     if (focusTimerRef.current) clearInterval(focusTimerRef.current);
     if (!showCfg) {
@@ -246,10 +218,11 @@ export default function App() {
           readOnly
           inputMode="none"
           autoFocus
+          {...({ virtualkeyboardpolicy: "manual" } as any)}
           className="absolute opacity-0 pointer-events-none"
         />
 
-        {/* card de busca */}
+        {/* card */}
         <section className="w-full max-w-md bg-white rounded-xl border border-blue-100 shadow p-3 flex flex-col gap-2">
           <div className="relative">
             <input
@@ -258,6 +231,8 @@ export default function App() {
               onKeyDown={(e) => e.key === "Enter" && processScan(barcode)}
               placeholder="Escaneie ou digite"
               disabled={loading}
+              inputMode="none"
+              {...({ virtualkeyboardpolicy: "manual" } as any)}
               className="w-full px-4 py-2 pl-9 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 caret-transparent"
             />
             <Package className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -294,7 +269,7 @@ export default function App() {
           )}
         </section>
 
-        {/* mensagens de erro */}
+        {/* mensagens */}
         {error && (
           <div className="mt-2 w-full max-w-md bg-red-50 border border-red-200 rounded-lg p-2 flex items-center gap-2">
             <AlertCircle className="w-4 h-4 text-red-600" />
@@ -302,22 +277,9 @@ export default function App() {
           </div>
         )}
 
-        {/* exibição do produto */}
+        {/* produto */}
         {product && (
           <section className="mt-2 w-full max-w-md bg-white rounded-xl border border-blue-100 shadow p-3">
-            {/* imagem, se existir */}
-            {product.imageUrl && (
-              <div className="mb-2 h-32 bg-gray-100 flex items-center justify-center overflow-hidden">
-                <img
-                  src={product.imageUrl}
-                  alt={product.name}
-                  className="max-h-full object-contain"
-                  onError={(e) => {
-                    e.currentTarget.style.display = "none";
-                  }}
-                />
-              </div>
-            )}
             <h2 className="text-base font-bold text-gray-800 truncate">
               {product.name}
             </h2>
