@@ -27,7 +27,7 @@ interface Product {
   category: string;
 }
 
-const DEFAULT_API_BASE = "http://7932077a4b6e.sn.mynetname.net:12470";
+const DEFAULT_API_BASE = "https://inward-pied-katerine.ngrok-free.dev";
 const RESET_DELAY_MS = 15_000;
 const CONFIG_PASSWORD = "F@ives25";
 
