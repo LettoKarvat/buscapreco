@@ -1,44 +1,141 @@
 /* eslint-disable react-hooks/exhaustive-deps */
-import Icon from "./resources/icon.png";
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback } from "react";
 import {
-  Search,
-  Package,
-  Loader2,
-  AlertCircle,
-  Barcode,
-  CheckCircle,
+  Camera,
+  ScanLine,
+  Flashlight,
+  FlashlightOff,
   Settings,
   X,
-  Clock,
+  Loader2,
+  Barcode,
+  AlertCircle,
+  CheckCircle2,
+  Play,
+  ZoomIn,
 } from "lucide-react";
-import { Keyboard } from "@capacitor/keyboard";
-import { registerPlugin } from "@capacitor/core";
+import { BrowserMultiFormatReader } from "@zxing/browser";
+import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 
-const ScannerPlugin = registerPlugin("ScannerPlugin");
+/* ========================= Utils de URL/ngrok ========================= */
+const isNgrokUrl = (u: string) =>
+  /(^https?:\/\/)?([^.]+\.)?ngrok(-free)?\.(app|dev)/i.test(u) ||
+  /(^https?:\/\/)?[a-z0-9-]+\.ngrok\.io/i.test(u);
 
-interface Product {
-  id: string;
-  name: string;
-  description: string;
-  price: number;
-  promotionalPrice?: number;
-  brand: string;
-  category: string;
-}
+const normalizeUrl = (u: string) => {
+  if (!u) return "";
+  const t = u.trim();
+  if (/^https?:\/\//i.test(t)) return t;
+  // se for domínio/host simples, tenta http por padrão
+  return isNgrokUrl(t) ? `https://${t}` : `http://${t}`;
+};
 
-const DEFAULT_API_BASE = "https://inward-pied-katerine.ngrok-free.dev";
+// Se a página está em HTTPS e o destino é HTTP, usa o proxy serverless
+const wrapWithProxyIfNeeded = (fullUrl: string) => {
+  try {
+    const pageIsHttps = window.location.protocol === "https:";
+    const destIsHttp = /^http:\/\//i.test(fullUrl);
+    if (pageIsHttps && destIsHttp) {
+      return `/api/proxy?url=${encodeURIComponent(fullUrl)}`;
+    }
+    return fullUrl;
+  } catch {
+    return fullUrl;
+  }
+};
+
+/* =============================== Types =============================== */
+type ProdDetail = {
+  CODAUXILIAR: number | string;
+  CODFILIAL: number;
+  CODPROD: number;
+  DESCRICAO: string;
+  ESTOQUE_ATUAL: number;
+  BLOQUEADO: number;
+  AVARIA: number;
+  ESTOQUE_DISPONIVEL: number;
+  CODFORNEC: number;
+  FORNECEDOR: string;
+  DTULTENT: string | null;
+  CUSTOULTENT: number | null;
+  PRECO_VAREJO?: number | null;
+};
+
+/* =============================== Consts ============================== */
+// Seu DNS público HTTP (porta com NAT do seu roteador)
+const DEFAULT_API_BASE = "http://7932077a4b6e.sn.mynetname.net:12470";
+// Para testes DENTRO da LAN em build local (http://localhost:5173), pode usar:
+// const DEFAULT_API_BASE = "http://192.168.1.101:5001";
+
+// Mantive esse valor pois existia no seu arquivo original
 const RESET_DELAY_MS = 15_000;
+
 const CONFIG_PASSWORD = "F@ives25";
 
-const normalizeUrl = (u: string) =>
-  u.startsWith("http://") || u.startsWith("https://") ? u : `http://${u}`;
+/* ============================ Format helpers ========================= */
+const fmtBRL = (n: number | null | undefined) =>
+  typeof n === "number"
+    ? n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
+    : "-";
+
+const fmtDate = (iso: string | null) => {
+  if (!iso) return "-";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "-";
+    return d.toLocaleDateString("pt-BR");
+  } catch {
+    return "-";
+  }
+};
+
+/* ====================== Helpers fora do componente ==================== */
+const makeBarcodeDetector = async (): Promise<any | null> => {
+  const W: any = window as any;
+  if (!("BarcodeDetector" in W)) return null;
+  const desired = [
+    "ean_13",
+    "ean_8",
+    "upc_a",
+    "upc_e",
+    "code_128",
+    "code_39",
+    "code_93",
+    "itf",
+    "codabar",
+    "qr_code",
+    "data_matrix",
+    "pdf417",
+    "aztec",
+  ];
+  try {
+    const supported: string[] =
+      (await W.BarcodeDetector.getSupportedFormats?.()) || [];
+    const fmts = supported.length
+      ? desired.filter((f) => supported.includes(f))
+      : desired;
+    if (!fmts.length) return null;
+    return new W.BarcodeDetector({ formats: fmts });
+  } catch {
+    return null;
+  }
+};
+
+const loadTesseractFromCDN = async (): Promise<any | null> => {
+  const W: any = window as any;
+  if (W.Tesseract) return W.Tesseract;
+  try {
+    await import(
+      /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"
+    );
+    return W.Tesseract || null;
+  } catch {
+    return null;
+  }
+};
 
 export default function App() {
-  useEffect(() => {
-    Keyboard.hide().catch(() => {});
-  }, []);
-
+  /* ============================== Configs ============================== */
   const [apiBase, setApiBase] = useState(() =>
     normalizeUrl(localStorage.getItem("apiBase") || DEFAULT_API_BASE)
   );
@@ -48,31 +145,13 @@ export default function App() {
   const [numReg, setNumReg] = useState(
     () => localStorage.getItem("numregiao") || "1"
   );
-
-  const [barcode, setBarcode] = useState("");
-  const [product, setProduct] = useState<Product | null>(null);
-  const [history, setHistory] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
-
   const [showCfg, setShowCfg] = useState(false);
+  const [unlocked, setUnlocked] = useState(false);
+  const [pwd, setPwd] = useState("");
+  const [pwdErr, setPwdErr] = useState("");
   const [tmpApi, setTmpApi] = useState(apiBase);
   const [tmpFil, setTmpFil] = useState(filial);
   const [tmpReg, setTmpReg] = useState(numReg);
-  const [pwd, setPwd] = useState("");
-  const [unlocked, setUnlocked] = useState(false);
-  const [pwdErr, setPwdErr] = useState("");
-
-  const inputRef = useRef<HTMLInputElement>(null);
-  const resetTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const focusTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // 🔑 chave para remontar o card do resultado e disparar animação
-  const [resultAnimKey, setResultAnimKey] = useState(0);
-
-  useEffect(() => {
-    (showCfg ? Keyboard.show() : Keyboard.hide()).catch(() => {});
-  }, [showCfg]);
 
   useEffect(() => {
     localStorage.setItem("apiBase", apiBase);
@@ -80,417 +159,1071 @@ export default function App() {
     localStorage.setItem("numregiao", numReg);
   }, [apiBase, filial, numReg]);
 
-  const apiSearch = useCallback(
-    async (code: string) => {
-      if (!code) return;
-      if (resetTimerRef.current) clearTimeout(resetTimerRef.current);
+  /* ========================== Estados do Scanner ======================= */
+  const [manualCode, setManualCode] = useState("");
 
-      setLoading(true);
-      setError("");
-      setProduct(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null);
+  const mediaTrackRef = useRef<MediaStreamTrack | null>(null);
+  const imageCaptureRef = useRef<any>(null);
+
+  const [scanning, setScanning] = useState(false);
+  const [torchOn, setTorchOn] = useState(false);
+  const [torchSupported, setTorchSupported] = useState<boolean | null>(null);
+  const [cameraErr, setCameraErr] = useState("");
+  const [needsGesture, setNeedsGesture] = useState(false);
+
+  const [ultraMode, setUltraMode] = useState(true);
+  const bdRef = useRef<any>(null);
+  const roiCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const processingRef = useRef(false);
+
+  const [zoomSupported, setZoomSupported] = useState(false);
+  const [zoomRange, setZoomRange] = useState<{
+    min: number;
+    max: number;
+    step: number;
+  } | null>(null);
+  const [zoom, setZoom] = useState<number | null>(null);
+
+  const lastTextRef = useRef<string>("");
+  const [lastCode, setLastCode] = useState<string>("");
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [product, setProduct] = useState<ProdDetail | null>(null);
+  const [animKey, setAnimKey] = useState(0);
+
+  const lastHitAtRef = useRef<number>(0);
+
+  /* ============================ Helpers câmera ========================= */
+  const stopCamera = useCallback(() => {
+    try {
+      setScanning(false);
+      setTorchOn(false);
+      setTorchSupported(null);
+      setZoomSupported(false);
+      setZoomRange(null);
+      setZoom(null);
+      bdRef.current = null;
+      imageCaptureRef.current = null;
+
+      codeReaderRef.current?.reset();
+      codeReaderRef.current = null;
+
+      const v = videoRef.current;
+      const stream = v?.srcObject as MediaStream | null;
+      stream?.getTracks().forEach((t) => t.stop());
+      if (v) {
+        v.srcObject = null;
+        v.removeAttribute("src");
+        v.removeAttribute("width");
+        v.removeAttribute("height");
+      }
+      mediaTrackRef.current = null;
+      setNeedsGesture(false);
+    } catch {}
+  }, []);
+
+  const ensureVideoPlay = useCallback(async () => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = true;
+    v.setAttribute("muted", "");
+    // @ts-ignore
+    v.playsInline = true;
+    v.setAttribute("playsinline", "true");
+    v.setAttribute("autoplay", "");
+    for (let i = 0; i < 3; i++) {
+      try {
+        await v.play();
+        setNeedsGesture(false);
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 180));
+      }
+    }
+    setNeedsGesture(true);
+  }, []);
+
+  const waitForVideoRef = () =>
+    new Promise<HTMLVideoElement>((resolve, reject) => {
+      let tries = 0;
+      const tick = () => {
+        const v = videoRef.current;
+        if (v) return resolve(v);
+        if (tries++ > 60) return reject(new Error("Vídeo não montou"));
+        requestAnimationFrame(tick);
+      };
+      tick();
+    });
+
+  const describeEnv = async () => {
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      const cams = devs.filter((d) => d.kind === "videoinput").length;
+      // @ts-ignore
+      return `secureContext=${
+        (window as any).isSecureContext
+      } videoinputs=${cams}`;
+    } catch {
+      // @ts-ignore
+      return `secureContext=${(window as any).isSecureContext}`;
+    }
+  };
+
+  const pickBackCamera = async () => {
+    const devices = await BrowserMultiFormatReader.listVideoInputDevices();
+    if (!devices.length) throw new Error("Nenhuma câmera encontrada");
+    const byLabel = devices.find((d) =>
+      /back|rear|trás|traseira/i.test(d.label || "")
+    );
+    return (byLabel || devices[devices.length - 1]).deviceId;
+  };
+
+  const quickPreview = useCallback(
+    async (deviceId?: string) => {
+      const v = await waitForVideoRef();
+      const baseWithDevice: MediaTrackConstraints | undefined = deviceId
+        ? { deviceId: { exact: deviceId } }
+        : undefined;
+      const baseFacing: MediaTrackConstraints = {
+        facingMode: { ideal: "environment" },
+      };
+
+      const profiles: MediaStreamConstraints[] = [
+        {
+          audio: false,
+          video: {
+            ...(baseWithDevice || baseFacing),
+            width: { ideal: 3840 },
+            height: { ideal: 2160 },
+            frameRate: { ideal: 60 },
+            aspectRatio: 16 / 9,
+          },
+        },
+        {
+          audio: false,
+          video: {
+            ...(baseWithDevice || baseFacing),
+            width: { ideal: 2560 },
+            height: { ideal: 1440 },
+            frameRate: { ideal: 60 },
+            aspectRatio: 16 / 9,
+          },
+        },
+        {
+          audio: false,
+          video: {
+            ...(baseWithDevice || baseFacing),
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 30 },
+            aspectRatio: 16 / 9,
+          },
+        },
+        {
+          audio: false,
+          video: {
+            ...(baseWithDevice || baseFacing),
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 30 },
+          },
+        },
+        {
+          audio: false,
+          video: {
+            ...(baseWithDevice || baseFacing),
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+          },
+        },
+        { audio: false, video: true },
+      ];
+      if (baseWithDevice) {
+        profiles.push(
+          {
+            audio: false,
+            video: {
+              ...baseFacing,
+              width: { ideal: 1280 },
+              height: { ideal: 720 },
+              frameRate: { ideal: 30 },
+            },
+          },
+          { audio: false, video: true }
+        );
+      }
+      let lastErr: any = null;
+      for (const c of profiles) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia(c);
+          v.srcObject = stream;
+          const track = stream.getVideoTracks?.()[0] || null;
+          mediaTrackRef.current = track;
+
+          if (track && "ImageCapture" in window) {
+            try {
+              // @ts-ignore
+              imageCaptureRef.current = new (window as any).ImageCapture(track);
+            } catch {
+              imageCaptureRef.current = null;
+            }
+          }
+
+          v.onloadedmetadata = () => {
+            if (!v) return;
+            v.setAttribute("width", String(v.videoWidth));
+            v.setAttribute("height", String(v.videoHeight));
+          };
+
+          await ensureVideoPlay();
+          return stream;
+        } catch (e) {
+          lastErr = e;
+        }
+      }
+      throw lastErr || new Error("Falha ao abrir câmera");
+    },
+    [ensureVideoPlay]
+  );
+
+  const safeApply = async (obj: any) => {
+    const track = mediaTrackRef.current;
+    if (!track) return;
+    try {
+      await track.applyConstraints({ advanced: [obj] });
+    } catch {}
+  };
+
+  const inspectCapabilitiesAndBoost = useCallback(() => {
+    setTimeout(async () => {
+      const track = mediaTrackRef.current;
+      if (!track) return;
 
       try {
-        const url = `${apiBase}/test-api/product/price?codfilial=${filial}&numregiao=${numReg}&codauxiliar=${code}`;
-        const r = await fetch(url, {
-          headers: { "ngrok-skip-browser-warning": "true" },
-        });
+        const caps: any = track.getCapabilities?.() || {};
+        setTorchSupported(Boolean(caps.torch));
 
-        console.log("URL", url);
-        console.log("status", r.status, r.statusText);
-        const bodyText = await r.text();
-        console.log("body", bodyText);
-
-        if (!r.ok) {
-          throw new Error(`${r.status} ${r.statusText}\n${bodyText}`);
+        if (
+          typeof caps.zoom?.min === "number" &&
+          typeof caps.zoom?.max === "number"
+        ) {
+          setZoomSupported(true);
+          setZoomRange({
+            min: caps.zoom.min,
+            max: caps.zoom.max,
+            step: caps.zoom.step ?? 0.1,
+          });
+          const z = caps.zoom.min + (caps.zoom.max - caps.zoom.min) * 0.35;
+          setZoom(z);
+          await safeApply({ zoom: z });
+        } else {
+          setZoomSupported(false);
+          setZoomRange(null);
+          setZoom(null);
         }
 
-        const data = JSON.parse(bodyText);
-        setProduct({
-          id: data.CODPROD,
-          name: data.DESCRICAO,
-          description: data.DESCRICAO,
-          price: data.PRECO_VAREJO,
+        if (caps.focusMode?.includes?.("continuous"))
+          await safeApply({ focusMode: "continuous" });
+        if (caps.exposureMode?.includes?.("continuous"))
+          await safeApply({ exposureMode: "continuous" });
+        if (typeof caps.exposureCompensation?.min === "number") {
+          const mid = Math.min(caps.exposureCompensation.max ?? 0, 0.4);
+          await safeApply({ exposureCompensation: mid });
+        }
+        if (caps.whiteBalanceMode?.includes?.("continuous"))
+          await safeApply({ whiteBalanceMode: "continuous" });
+      } catch {
+        setTorchSupported(false);
+        setZoomSupported(false);
+        setZoomRange(null);
+        setZoom(null);
+      }
+    }, 600);
+  }, []);
+
+  const toggleTorch = useCallback(async () => {
+    const track = mediaTrackRef.current;
+    if (!track) return;
+    try {
+      // @ts-ignore
+      await track.applyConstraints({ advanced: [{ torch: !torchOn }] });
+      setTorchOn((v) => !v);
+    } catch {
+      setTorchSupported(false);
+    }
+  }, [torchOn]);
+
+  const applyZoom = useCallback(async (val: number) => {
+    const track = mediaTrackRef.current;
+    if (!track) return;
+    try {
+      // @ts-ignore
+      await track.applyConstraints({ advanced: [{ zoom: val }] });
+      setZoom(val);
+    } catch {}
+  }, []);
+
+  const measureBrightness = (v: HTMLVideoElement) => {
+    const w = Math.max(64, Math.floor(v.videoWidth * 0.25));
+    const h = Math.max(48, Math.floor(v.videoHeight * 0.25));
+    const c = document.createElement("canvas");
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext("2d", { willReadFrequently: true })!;
+    ctx.drawImage(
+      v,
+      (v.videoWidth - w) / 2,
+      (v.videoHeight - h) / 2,
+      w,
+      h,
+      0,
+      0,
+      w,
+      h
+    );
+    const d = ctx.getImageData(0, 0, w, h).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      sum += d[i] * 0.2126 + d[i + 1] * 0.7152 + d[i + 2] * 0.0722;
+    }
+    return sum / (d.length / 4) / 255; // 0..1
+  };
+
+  const startBDLoop = useCallback(() => {
+    const v = videoRef.current as any;
+    if (!v || !bdRef.current) return;
+    const raf = v.requestVideoFrameCallback
+      ? (cb: Function) => v.requestVideoFrameCallback(() => cb())
+      : (cb: Function) => setTimeout(() => cb(), 16);
+
+    const step = async () => {
+      if (!scanning || !bdRef.current) return;
+      if (processingRef.current) {
+        raf(step);
+        return;
+      }
+      processingRef.current = true;
+
+      try {
+        const vw = v.videoWidth || 0;
+        const vh = v.videoHeight || 0;
+        if (!vw || !vh) {
+          processingRef.current = false;
+          raf(step);
+          return;
+        }
+
+        const rw = Math.floor(vw * 0.8);
+        const rh = Math.floor(vh * 0.6);
+        const rx = Math.floor((vw - rw) / 2);
+        const ry = Math.floor((vh - rh) / 2);
+
+        let canvas = roiCanvasRef.current;
+        if (!canvas)
+          (canvas = document.createElement("canvas")),
+            (roiCanvasRef.current = canvas);
+        canvas.width = rw;
+        canvas.height = rh;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
+        ctx.drawImage(v, rx, ry, rw, rh, 0, 0, rw, rh);
+
+        const bitmap = await createImageBitmap(canvas);
+        const codes = await bdRef.current.detect(bitmap);
+        bitmap.close();
+
+        if (codes?.length) {
+          const code = (codes[0].rawValue || "").trim();
+          if (code && code !== lastTextRef.current) {
+            lastTextRef.current = code;
+            lastHitAtRef.current = Date.now();
+            setLastCode(code);
+            fetchProduct(code);
+          }
+        } else {
+          try {
+            const bright = measureBrightness(v);
+            if (bright < 0.22 && torchSupported && !torchOn) {
+              await toggleTorch();
+            } else if (bright > 0.55 && torchSupported && torchOn) {
+              await toggleTorch();
+            }
+          } catch {}
+        }
+      } catch {
+      } finally {
+        processingRef.current = false;
+        raf(step);
+      }
+    };
+    raf(step);
+  }, [scanning, torchSupported, torchOn, toggleTorch]);
+
+  const startZXing = useCallback(async () => {
+    const hints = new Map();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.EAN_13,
+      BarcodeFormat.EAN_8,
+      BarcodeFormat.UPC_A,
+      BarcodeFormat.UPC_E,
+      BarcodeFormat.CODE_128,
+      BarcodeFormat.ITF,
+      BarcodeFormat.CODE_39,
+      BarcodeFormat.CODABAR,
+    ]);
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    try {
+      // @ts-ignore
+      hints.set(DecodeHintType.ALSO_INVERTED, true);
+      // @ts-ignore
+      hints.set(DecodeHintType.ASSUME_GS1, true);
+    } catch {}
+
+    // @ts-ignore
+    const reader = new BrowserMultiFormatReader(hints, 160);
+    codeReaderRef.current = reader;
+
+    await new Promise((r) => setTimeout(r, 200));
+    await reader.decodeFromVideoElement(videoRef.current!, (res) => {
+      const txt = res?.getText?.()?.trim();
+      if (txt && txt !== lastTextRef.current) {
+        lastTextRef.current = txt;
+        lastHitAtRef.current = Date.now();
+        setLastCode(txt);
+        fetchProduct(txt);
+      }
+    });
+  }, []);
+
+  const runOCRDigits = useCallback(
+    async (bitmap: ImageBitmap): Promise<string | null> => {
+      try {
+        const Tesseract = await loadTesseractFromCDN();
+        if (!Tesseract) return null;
+
+        const worker = await Tesseract.createWorker({ logger: () => {} });
+        await worker.loadLanguage("eng");
+        await worker.initialize("eng");
+        await worker.setParameters({
+          tessedit_char_whitelist: "0123456789",
+          tessedit_pageseg_mode: "6",
         });
 
-        // 🔁 re-dispara animação do card a cada resultado
-        setResultAnimKey((k) => k + 1);
+        const c = document.createElement("canvas");
+        c.width = bitmap.width;
+        c.height = bitmap.height;
+        const ctx = c.getContext("2d")!;
+        // @ts-ignore
+        ctx.drawImage(bitmap, 0, 0);
+        const {
+          data: { text },
+        } = await worker.recognize(c);
+        await worker.terminate();
 
-        setHistory((prev) =>
-          [code, ...prev.filter((c) => c !== code)].slice(0, 5)
-        );
+        const digits = (text || "").replace(/\D+/g, "");
+        if (digits.length >= 8 && digits.length <= 18) return digits;
+        return null;
+      } catch {
+        return null;
+      }
+    },
+    []
+  );
+
+  const captureHQ = useCallback(
+    async (silent = true) => {
+      try {
+        if (!mediaTrackRef.current || !imageCaptureRef.current) return;
+
+        let blob: Blob;
+        try {
+          blob = await imageCaptureRef.current.takePhoto({
+            imageWidth: 4032,
+            imageHeight: 3024,
+            fillLightMode: torchOn ? "flash" : "off",
+          });
+        } catch {
+          blob = await imageCaptureRef.current.takePhoto();
+        }
+
+        const bitmap = await createImageBitmap(blob);
+
+        if (bdRef.current) {
+          try {
+            const codes = await bdRef.current.detect(bitmap);
+            if (codes?.length) {
+              const code = (codes[0].rawValue || "").trim();
+              if (code) {
+                lastTextRef.current = code;
+                lastHitAtRef.current = Date.now();
+                setLastCode(code);
+                fetchProduct(code);
+                bitmap.close();
+                return;
+              }
+            }
+          } catch {}
+        }
+
+        const digits = await runOCRDigits(bitmap);
+        if (digits) {
+          lastTextRef.current = digits;
+          lastHitAtRef.current = Date.now();
+          setLastCode(digits);
+          fetchProduct(digits);
+          bitmap.close();
+          return;
+        }
+
+        bitmap.close();
+        if (!silent) setError("Não foi possível ler automaticamente (HQ).");
       } catch (e: any) {
-        console.error(e);
-        setError(e.message || "Falha na busca (veja console)");
+        if (!silent) setError(e?.message || "Falha na captura HQ.");
+      }
+    },
+    [torchOn, runOCRDigits]
+  );
+
+  useEffect(() => {
+    if (!scanning) return;
+    const id = setInterval(async () => {
+      const now = Date.now();
+      const idle = now - (lastHitAtRef.current || now);
+      if (idle > 1500) {
+        await captureHQ(true);
+        lastHitAtRef.current = Date.now();
+      }
+      if (zoomSupported && zoomRange && zoom != null && idle > 900) {
+        const next = Math.min(zoomRange.max, zoom + (zoomRange.step || 0.1));
+        if (next > zoom) applyZoom(next);
+      }
+    }, 600);
+    return () => clearInterval(id);
+  }, [scanning, captureHQ, zoomSupported, zoomRange, zoom, applyZoom]);
+
+  const startCamera = useCallback(async () => {
+    setCameraErr("");
+    setError("");
+    setProduct(null);
+    setLastCode("");
+    lastTextRef.current = "";
+    lastHitAtRef.current = Date.now();
+
+    stopCamera();
+
+    try {
+      setScanning(true);
+      await waitForVideoRef();
+
+      let deviceId: string | undefined = undefined;
+      try {
+        deviceId = await pickBackCamera();
+      } catch {
+        deviceId = undefined;
       }
 
-      setLoading(false);
-      resetTimerRef.current = setTimeout(() => {
-        setProduct(null);
-        setError("");
-      }, RESET_DELAY_MS);
-    },
-    [apiBase, filial, numReg]
-  );
+      await quickPreview(deviceId);
+      inspectCapabilitiesAndBoost();
 
-  const processScan = useCallback(
-    (code: string) => {
-      setBarcode("");
-      apiSearch(code.trim());
-    },
-    [apiSearch]
-  );
-
-  useEffect(() => {
-    const sub = ScannerPlugin.addListener(
-      "scan",
-      ({ code }: { code: string }) => processScan(code)
-    );
-    return () => {
-      sub.remove();
-      ScannerPlugin.stop?.().catch(() => {});
-    };
-  }, [processScan]);
-
-  useEffect(() => {
-    const ip = (window as any)?.plugins?.intent;
-    if (!ip?.setNewIntentHandler) return;
-    ip.setNewIntentHandler((it: any) => {
-      const code =
-        it?.extras?.BARCODE ?? it?.extras?.SCAN_CODE ?? it?.extras?.scannerdata;
-      if (code) processScan(code);
-    });
-  }, [processScan]);
-
-  useEffect(() => {
-    let buf = "";
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Enter") {
-        processScan(buf);
-        buf = "";
-      } else if (e.key.length === 1) buf += e.key;
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [processScan]);
-
-  useEffect(() => {
-    if (focusTimerRef.current) clearInterval(focusTimerRef.current);
-    if (!showCfg) {
-      focusTimerRef.current = setInterval(
-        () => inputRef.current?.focus(),
-        1500
-      );
+      if (ultraMode) {
+        const bd = await makeBarcodeDetector();
+        if (bd) {
+          bdRef.current = bd;
+          await new Promise((r) => setTimeout(r, 150));
+          startBDLoop();
+        } else {
+          await startZXing();
+        }
+      } else {
+        await startZXing();
+      }
+    } catch (e: any) {
+      const n = e?.name || "";
+      const msg =
+        n === "NotAllowedError"
+          ? "Permissão de câmera negada."
+          : n === "OverconstrainedError"
+          ? "Não foi possível satisfazer as constraints de vídeo."
+          : e?.message || String(e);
+      const env = await describeEnv();
+      setCameraErr(`${n || "Erro"}: ${msg}\n${env}`);
+      stopCamera();
     }
-    return () => focusTimerRef.current && clearInterval(focusTimerRef.current);
-  }, [showCfg]);
+  }, [
+    stopCamera,
+    quickPreview,
+    inspectCapabilitiesAndBoost,
+    ultraMode,
+    startBDLoop,
+    startZXing,
+  ]);
 
+  /* ======================= API produto (via proxy se precisar) ========= */
+  const fetchProduct = async (code: string) => {
+    const c = (code || "").trim();
+    if (!c) return;
+
+    setLoading(true);
+    setError("");
+    setProduct(null);
+    setAnimKey((k) => k + 1);
+
+    const rawUrl =
+      `${apiBase}/test-api/product/details` +
+      `?produto=${encodeURIComponent(c)}` +
+      `&codfilial=${encodeURIComponent(filial)}` +
+      `&numregiao=${encodeURIComponent(numReg)}` +
+      `&with_price=1`;
+
+    const url = wrapWithProxyIfNeeded(rawUrl);
+
+    try {
+      const headers: Record<string, string> = {};
+      if (isNgrokUrl(apiBase)) headers["ngrok-skip-browser-warning"] = "true";
+
+      const res = await fetch(url, { headers });
+      const body = await res.text();
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}\n${body}`);
+
+      const data = JSON.parse(body);
+      const row: ProdDetail = Array.isArray(data) ? data[0] : data;
+      setProduct(row || null);
+    } catch (e: any) {
+      setError(e?.message || "Erro ao buscar produto");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /* ============================ Lifecycle ============================== */
+  useEffect(() => () => stopCamera(), [stopCamera]);
+
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onCanPlay = () => ensureVideoPlay();
+    v.addEventListener("canplay", onCanPlay);
+    v.addEventListener("loadedmetadata", onCanPlay);
+    return () => {
+      v.removeEventListener("canplay", onCanPlay);
+      v.removeEventListener("loadedmetadata", onCanPlay);
+    };
+  }, [ensureVideoPlay]);
+
+  useEffect(() => {
+    startCamera();
+  }, []); // auto-start
+
+  const videoMaxH = "70vh";
+
+  /* ================================ UI ================================= */
   return (
-    <div className="h-screen flex flex-col bg-slate-950 overflow-hidden relative">
-      {/* CSS das animações */}
-      <style>{`
-        @keyframes slideUp { 
-          0% { opacity: 0; transform: translateY(16px); } 
-          100% { opacity: 1; transform: translateY(0); } 
-        }
-        .animate-slide-up { animation: slideUp .45s ease-out both; }
-
-        @keyframes riseIn {
-          0% { opacity: 0; transform: translateY(8px); }
-          100% { opacity: 1; transform: translateY(0); }
-        }
-        .price-rise { animation: riseIn .5s cubic-bezier(.2,.8,.2,1) both; }
-
-        @keyframes popIn {
-          0% { transform: scale(.98); }
-          60% { transform: scale(1.03); }
-          100% { transform: scale(1); }
-        }
-        .price-pop { animation: popIn .5s ease-out .05s both; }
-      `}</style>
-
-      {/* Fundo degradê */}
-      <div className="absolute inset-0 bg-gradient-to-br from-blue-950 via-slate-900 to-cyan-950"></div>
-
-      {/* Bolhas de cor */}
-      <div className="absolute inset-0 opacity-30">
-        <div className="absolute top-0 -left-4 w-96 h-96 bg-blue-500 rounded-full mix-blend-multiply filter blur-3xl animate-blob"></div>
-        <div className="absolute top-0 -right-4 w-96 h-96 bg-cyan-500 rounded-full mix-blend-multiply filter blur-3xl animate-blob animation-delay-2000"></div>
-        <div className="absolute -bottom-8 left-20 w-96 h-96 bg-blue-600 rounded-full mix-blend-multiply filter blur-3xl animate-blob animation-delay-4000"></div>
-      </div>
-
-      {/* Input oculto para manter foco quando for leitor */}
-      <input
-        ref={inputRef}
-        value={barcode}
-        readOnly
-        inputMode="none"
-        autoFocus
-        {...({ virtualkeyboardpolicy: "manual" } as any)}
-        className="absolute opacity-0 pointer-events-none"
-      />
-
-      <header className="flex-none relative bg-slate-900/80 backdrop-blur-xl border-b border-slate-800/60">
-        {/* ação à direita */}
-        <button
-          onClick={() => setShowCfg(true)}
-          className="absolute right-5 top-5 p-2 rounded-lg text-slate-200 hover:bg-slate-800 transition"
-          aria-label="Configurações"
-        >
-          <Settings className="w-5 h-5" />
-        </button>
-
-        <div className="mx-auto w-full max-w-4xl px-6">
-          {/* LOGO centralizada com contraste para leitura */}
-          <div className="flex items-center justify-center pt-5">
-            <div className="rounded-2xl bg-white/95 px-3 py-2 shadow-xl ring-1 ring-slate-200 backdrop-blur-sm">
-              <img
-                src={Icon}
-                alt="Logo"
-                className="h-[160px] sm:h-[180px] md:h-[200px] w-auto object-contain"
-              />
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex flex-col">
+      {/* Header */}
+      <header className="bg-white shadow-sm border-b border-slate-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="bg-gradient-to-br from-blue-500 to-blue-600 p-2.5 rounded-xl shadow-md">
+              <Barcode className="w-6 h-6 text-white" strokeWidth={2.5} />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold text-slate-800 tracking-tight">
+                Consulta de Produtos
+              </h1>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Leitura automática (câmera + OCR)
+              </p>
             </div>
           </div>
 
-          {/* Título centralizado, ícone discreto */}
-          <div className="flex items-center justify-center gap-3 py-4">
-            <span className="inline-flex items-center justify-center w-9 h-9 rounded-lg bg-blue-500/12 border border-blue-400/25">
-              <Barcode className="w-5 h-5 text-blue-300" strokeWidth={2.25} />
-            </span>
-            <h1 className="text-2xl md:text-[28px] font-semibold leading-tight tracking-tight text-slate-100">
-              Scanner de Produtos
-            </h1>
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={ultraMode}
+                onChange={(e) => setUltraMode(e.target.checked)}
+              />
+              Modo Ultra
+            </label>
+
+            <button
+              onClick={() => {
+                setTmpApi(apiBase);
+                setTmpFil(filial);
+                setTmpReg(numReg);
+                setShowCfg(true);
+                setUnlocked(false);
+                setPwd("");
+                setPwdErr("");
+              }}
+              className="p-2.5 hover:bg-slate-100 rounded-xl transition-colors"
+              aria-label="Configurações"
+            >
+              <Settings className="w-5 h-5 text-slate-600" />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Aviso se estiver em HTTPS usando um endpoint HTTP (sem proxy) */}
+      {window.location.protocol === "https:" && /^http:\/\//i.test(apiBase) && (
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 mt-4">
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
+            O site está em HTTPS e a API em HTTP. As chamadas serão roteadas via{" "}
+            <code>/api/proxy</code> da Vercel para evitar bloqueio de mixed
+            content.
+          </div>
+        </div>
+      )}
+
+      {/* Main */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 flex flex-col gap-4">
+        <div className="bg-white rounded-2xl shadow-lg border border-slate-200 p-4">
+          <label className="block text-xs font-semibold text-slate-600 mb-1">
+            Teste manual (digite o código e pressione Enter)
+          </label>
+          <div className="flex gap-2">
+            <input
+              value={manualCode}
+              onChange={(e) => setManualCode(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && fetchProduct(manualCode)}
+              placeholder="Ex.: 7891234567890, CODPROD ou CODFAB"
+              className="flex-1 px-3 py-2 rounded-xl border-2 border-slate-300 focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none text-sm"
+            />
           </div>
         </div>
 
-        {/* divisor suave */}
-        <div className="h-px w-full bg-gradient-to-r from-transparent via-slate-800 to-transparent" />
-      </header>
+        {/* Câmera */}
+        <div className="bg-white rounded-2xl shadow-lg overflow-hidden border border-slate-200">
+          <div className="relative">
+            <video
+              ref={videoRef}
+              className="w-full h-auto bg-black"
+              style={{ maxHeight: videoMaxH, objectFit: "contain" }}
+              playsInline
+              autoPlay
+              muted
+              onClick={() => needsGesture && ensureVideoPlay()}
+              onPlay={() => setNeedsGesture(false)}
+            />
 
-      {/* Main */}
-      <main className="flex-1 flex flex-col items-center justify-start px-4 pt-8 pb-6 overflow-y-auto relative z-10">
-        <div className="w-full max-w-md space-y-6">
-          <section className="bg-slate-800/90 backdrop-blur-xl rounded-3xl border border-slate-700/50 shadow-2xl shadow-black/50 p-6 animate-slide-up">
-            <div className="space-y-4">
-              <div className="relative group">
-                <div className="absolute inset-0 bg-gradient-to-r from-blue-500/20 to-cyan-400/20 rounded-2xl blur-xl opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                <div className="relative flex items-center">
-                  <div className="absolute left-4 pointer-events-none">
-                    <Package
-                      className="w-5 h-5 text-slate-400"
-                      strokeWidth={2}
-                    />
-                  </div>
-                  <input
-                    value={barcode}
-                    onChange={(e) => setBarcode(e.target.value.trim())}
-                    onKeyDown={(e) => e.key === "Enter" && processScan(barcode)}
-                    placeholder="Escaneie ou digite o código"
-                    disabled={loading}
-                    inputMode="none"
-                    {...({ virtualkeyboardpolicy: "manual" } as any)}
-                    className="w-full px-12 py-4 bg-slate-900/50 border-2 border-slate-600 rounded-2xl text-base font-medium text-white placeholder:text-slate-500 focus:ring-4 focus:ring-blue-500/50 focus:border-blue-500 caret-transparent transition-all outline-none disabled:bg-slate-900/30 disabled:text-slate-500"
-                  />
-                  {barcode && !loading && (
-                    <button
-                      onClick={() => setBarcode("")}
-                      className="absolute right-4 p-1 hover:bg-slate-700 rounded-lg transition-colors"
-                    >
-                      <X className="w-4 h-4 text-slate-400" />
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              <button
-                onClick={() => processScan(barcode)}
-                disabled={loading || !barcode}
-                className="w-full bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-700 hover:to-cyan-600 disabled:from-slate-300 disabled:to-slate-300 text-white py-4 rounded-2xl flex items-center justify-center gap-2.5 text-base font-semibold shadow-lg shadow-blue-500/30 hover:shadow-xl hover:shadow-blue-500/40 transition-all duration-200 disabled:shadow-none"
-              >
-                {loading ? (
-                  <>
-                    <Loader2
-                      className="w-5 h-5 animate-spin"
-                      strokeWidth={2.5}
-                    />
-                    <span>Processando...</span>
-                  </>
-                ) : (
-                  <>
-                    <Search className="w-5 h-5" strokeWidth={2.5} />
-                    <span>Buscar Produto</span>
-                  </>
-                )}
-              </button>
-
-              {history.length > 0 && (
-                <div className="pt-4 border-t border-slate-700">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Clock className="w-4 h-4 text-blue-400" />
-                    <p className="text-sm font-semibold text-slate-200">
-                      Consultas Recentes
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {history.map((c) => (
-                      <button
-                        key={c}
-                        onClick={() => processScan(c)}
-                        className="px-4 py-2 bg-slate-700/50 hover:bg-slate-600 text-slate-200 rounded-xl text-sm font-medium transition-all duration-200 hover:scale-105 border border-slate-600"
-                      >
-                        {c}
-                      </button>
-                    ))}
-                  </div>
+            <div className="absolute inset-0 pointer-events-none">
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-48 border-4 border-blue-500 rounded-2xl shadow-2xl" />
+              {!needsGesture && (
+                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-black/70 backdrop-blur-sm px-4 py-2 rounded-full flex items-center gap-2">
+                  <ScanLine className="w-4 h-4 text-blue-400 animate-pulse" />
+                  <span className="text-white text-sm font-medium">
+                    {bdRef.current
+                      ? "Lendo automaticamente (Ultra)..."
+                      : "Lendo automaticamente..."}
+                  </span>
                 </div>
               )}
             </div>
-          </section>
 
-          {error && (
-            <section className="bg-red-900/80 backdrop-blur-xl border-2 border-red-500/50 rounded-3xl p-5 shadow-2xl shadow-red-900/50 animate-slide-up">
-              <div className="flex items-start gap-3">
-                <div className="flex-shrink-0 p-2 bg-red-500/20 rounded-xl">
-                  <AlertCircle
-                    className="w-5 h-5 text-red-400"
-                    strokeWidth={2.5}
+            {needsGesture && (
+              <div
+                className="absolute inset-0 bg-black/60 flex items-center justify-center cursor-pointer"
+                onClick={ensureVideoPlay}
+                title="Toque para liberar o vídeo"
+              >
+                <div className="inline-flex items-center gap-2 bg-white/90 text-slate-800 font-semibold px-5 py-3 rounded-xl shadow-lg">
+                  <Play className="w-5 h-5" />
+                  Toque para liberar o vídeo
+                </div>
+              </div>
+            )}
+
+            <div className="absolute bottom-4 right-4 flex gap-2">
+              {torchSupported && (
+                <button
+                  onClick={toggleTorch}
+                  className="bg-black/70 backdrop-blur-sm hover:bg-black/80 text-white p-3 rounded-full transition-all shadow-lg"
+                  aria-label={torchOn ? "Desligar flash" : "Ligar flash"}
+                >
+                  {torchOn ? (
+                    <Flashlight className="w-5 h-5" />
+                  ) : (
+                    <FlashlightOff className="w-5 h-5" />
+                  )}
+                </button>
+              )}
+              <button
+                onClick={stopCamera}
+                className="bg-red-500/90 backdrop-blur-sm hover:bg-red-600 text-white p-3 rounded-full transition-all shadow-lg"
+                aria-label="Parar câmera"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {zoomSupported && zoomRange && (
+              <div className="absolute bottom-4 left-4 bg-black/70 backdrop-blur-sm rounded-xl px-3 py-2 shadow-lg">
+                <div className="flex items-center gap-2">
+                  <ZoomIn className="w-4 h-4 text-white" />
+                  <input
+                    type="range"
+                    min={zoomRange.min}
+                    max={zoomRange.max}
+                    step={zoomRange.step}
+                    value={zoom ?? zoomRange.min}
+                    onChange={(e) => applyZoom(Number(e.target.value))}
+                    className="w-40 accent-white"
+                    aria-label="Zoom"
                   />
                 </div>
-                <div className="flex-1 min-w-0">
-                  <h3 className="text-sm font-bold text-red-200 mb-1">
-                    Erro na Consulta
-                  </h3>
-                  <p className="text-sm text-red-300 whitespace-pre-wrap break-words">
-                    {error}
-                  </p>
-                </div>
               </div>
-            </section>
-          )}
-
-          {product && (
-            <section
-              key={resultAnimKey} // <- remonta para animar sempre
-              className="bg-gradient-to-br from-slate-800 to-slate-900 backdrop-blur-xl rounded-3xl border-2 border-blue-500/50 shadow-2xl shadow-blue-500/30 overflow-hidden animate-slide-up"
-            >
-              <div className="bg-gradient-to-r from-blue-500 to-cyan-400 px-6 py-4">
-                <div className="flex items-center gap-2 text-white">
-                  <CheckCircle className="w-5 h-5" strokeWidth={2.5} />
-                  <span className="text-sm font-bold uppercase tracking-wide">
-                    Produto Encontrado
-                  </span>
-                </div>
-              </div>
-
-              <div className="p-6 space-y-4">
-                <div>
-                  <h2 className="text-xl font-bold text-white mb-2 leading-tight">
-                    {product.name}
-                  </h2>
-                  <p className="text-sm text-slate-300 leading-relaxed">
-                    {product.description}
-                  </p>
-                </div>
-
-                <div className="flex items-end justify-between pt-4 border-t border-slate-700">
-                  {/* bloco do preço com animações */}
-                  <div className="price-rise">
-                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">
-                      Preço
-                    </p>
-                    <div className="flex items-baseline gap-2">
-                      <span className="price-pop text-3xl font-bold bg-gradient-to-r from-blue-400 to-cyan-300 bg-clip-text text-transparent">
-                        R$ {product.price.toFixed(2)}
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="text-right">
-                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1">
-                      Código
-                    </p>
-                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700/50 rounded-lg border border-slate-600">
-                      <Barcode className="w-4 h-4 text-slate-300" />
-                      <span className="text-sm font-bold text-slate-200">
-                        {product.id}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-          )}
+            )}
+          </div>
         </div>
-      </main>
 
-      {/* Footer */}
-      <footer className="flex-none bg-slate-900/80 backdrop-blur-xl border-t border-slate-700/50 text-center py-4 relative z-10">
-        <p className="text-sm text-slate-400">
-          Desenvolvido por{" "}
-          <span className="font-bold bg-gradient-to-r from-blue-400 to-cyan-300 bg-clip-text text-transparent">
-            Faives Soluções em Tecnologia
-          </span>
-        </p>
-      </footer>
+        {lastCode && (
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-center gap-3">
+            <div className="bg-blue-500 p-2 rounded-lg">
+              <Barcode className="w-5 h-5 text-white" />
+            </div>
+            <div className="flex-1">
+              <p className="text-xs font-medium text-blue-700 uppercase tracking-wide">
+                Código detectado automaticamente
+              </p>
+              <p className="text-lg font-bold text-blue-900 mt-0.5">
+                {lastCode}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {loading && (
+          <div className="bg-white rounded-xl shadow-md p-8 flex flex-col items-center justify-center">
+            <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
+            <p className="text-slate-600 font-medium">Consultando produto...</p>
+          </div>
+        )}
+
+        {error && !loading && (
+          <div className="bg-red-50 border border-red-200 rounded-xl p-5 flex items-start gap-3">
+            <AlertCircle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-base font-semibold text-red-800">
+                Erro na consulta
+              </p>
+              <p className="text-sm text-red-600 mt-1">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {product && !loading && (
+          <div
+            key={animKey}
+            className="bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-500"
+          >
+            <div className="bg-gradient-to-r from-green-500 to-green-600 px-6 py-5 flex items-center gap-3">
+              <div className="bg-white/20 p-2 rounded-lg">
+                <CheckCircle2
+                  className="w-6 h-6 text-white"
+                  strokeWidth={2.5}
+                />
+              </div>
+              <div className="flex-1">
+                <p className="text-green-50 text-sm font-medium">
+                  Produto Encontrado
+                </p>
+                <p className="text-white text-lg font-bold mt-0.5">
+                  {product.DESCRICAO}
+                </p>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-slate-50 rounded-xl p-4 border border-slate-200">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">
+                    Código Produto
+                  </p>
+                  <p className="text-xl font-bold text-slate-900">
+                    {product.CODPROD}
+                  </p>
+                </div>
+                <div className="bg-slate-50 rounded-xl p-4 border border-slate-200">
+                  <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">
+                    Código Auxiliar
+                  </p>
+                  <p className="text-xl font-bold text-slate-900">
+                    {product.CODAUXILIAR}
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl p-5 border border-blue-200">
+                <h3 className="text-sm font-bold text-blue-900 mb-4 flex items-center gap-2">
+                  <div className="w-1 h-4 bg-blue-500 rounded-full" />
+                  Informações de Estoque
+                </h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <p className="text-xs text-blue-700 font-medium mb-1">
+                      Estoque Atual
+                    </p>
+                    <p className="text-2xl font-bold text-blue-900">
+                      {product.ESTOQUE_ATUAL}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-blue-700 font-medium mb-1">
+                      Disponível
+                    </p>
+                    <p className="text-2xl font-bold text-green-600">
+                      {product.ESTOQUE_DISPONIVEL}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-blue-700 font-medium mb-1">
+                      Bloqueado
+                    </p>
+                    <p className="text-lg font-semibold text-orange-600">
+                      {product.BLOQUEADO}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-blue-700 font-medium mb-1">
+                      Avaria
+                    </p>
+                    <p className="text-lg font-semibold text-red-600">
+                      {product.AVARIA}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="bg-green-50 rounded-xl p-4 border border-green-200">
+                  <p className="text-xs font-semibold text-green-700 uppercase tracking-wide mb-2">
+                    Preço Varejo
+                  </p>
+                  <p className="text-2xl font-bold text-green-800">
+                    {fmtBRL(product.PRECO_VAREJO)}
+                  </p>
+                </div>
+                <div className="bg-amber-50 rounded-xl p-4 border border-amber-200">
+                  <p className="text-xs font-semibold text-amber-700 uppercase tracking-wide mb-2">
+                    Custo Últ. Entrada
+                  </p>
+                  <p className="text-2xl font-bold text-amber-800">
+                    {fmtBRL(product.CUSTOULTENT)}
+                  </p>
+                </div>
+              </div>
+
+              <div className="bg-slate-50 rounded-xl p-5 border border-slate-200">
+                <h3 className="text-sm font-bold text-slate-900 mb-3 flex items-center gap-2">
+                  <div className="w-1 h-4 bg-slate-500 rounded-full" />
+                  Fornecedor
+                </h3>
+                <div className="space-y-2">
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-slate-600 font-medium">
+                      Nome:
+                    </span>
+                    <span className="text-sm text-slate-900 font-semibold">
+                      {product.FORNECEDOR}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-slate-600 font-medium">
+                      Código:
+                    </span>
+                    <span className="text-sm text-slate-900 font-semibold">
+                      {product.CODFORNEC}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-sm text-slate-600 font-medium">
+                      Última Entrada:
+                    </span>
+                    <span className="text-sm text-slate-900 font-semibold">
+                      {fmtDate(product.DTULTENT)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-2">
+                <div className="text-center py-2">
+                  <p className="text-xs text-slate-500 font-medium mb-1">
+                    Filial
+                  </p>
+                  <p className="text-base font-bold text-slate-700">
+                    {product.CODFILIAL}
+                  </p>
+                </div>
+                <div className="text-center py-2">
+                  <p className="text-xs text-slate-500 font-medium mb-1">
+                    Região
+                  </p>
+                  <p className="text-base font-bold text-slate-700">{numReg}</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
 
       {/* Modal de Configurações */}
       {showCfg && (
-        <div className="fixed inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-50 p-4 animate-slide-up">
-          <div className="bg-slate-800 rounded-3xl w-full max-w-md shadow-2xl border border-slate-700 overflow-hidden">
-            <div className="bg-gradient-to-r from-blue-500 to-cyan-400 px-6 py-5">
-              <div className="flex justify-between items-center">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-white/20 backdrop-blur-sm rounded-xl">
-                    <Settings
-                      className="w-5 h-5 text-white"
-                      strokeWidth={2.5}
-                    />
-                  </div>
-                  <h3 className="text-xl font-bold text-white">
-                    Configurações
-                  </h3>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto animate-in zoom-in-95 duration-200">
+            <div className="bg-gradient-to-r from-slate-700 to-slate-800 px-6 py-5 flex items-center justify-between rounded-t-2xl">
+              <div className="flex items-center gap-3">
+                <div className="bg-white/20 p-2 rounded-lg">
+                  <Settings className="w-5 h-5 text-white" />
                 </div>
-                <button
-                  onClick={() => {
-                    setShowCfg(false);
-                    setUnlocked(false);
-                    setPwd("");
-                    setPwdErr("");
-                  }}
-                  className="p-2 hover:bg-white/20 rounded-xl transition-colors"
-                >
-                  <X className="w-5 h-5 text-white" strokeWidth={2.5} />
-                </button>
+                <h2 className="text-xl font-bold text-white">Configurações</h2>
               </div>
+              <button
+                onClick={() => {
+                  setShowCfg(false);
+                  setUnlocked(false);
+                  setPwd("");
+                  setPwdErr("");
+                }}
+                className="p-1.5 hover:bg-white/20 rounded-lg transition-colors"
+                aria-label="Fechar"
+              >
+                <X className="w-5 h-5 text-white" />
+              </button>
             </div>
 
             <div className="p-6">
               {!unlocked ? (
                 <div className="space-y-4">
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+                    <p className="text-sm text-amber-800">
+                      Digite a senha para acessar as configurações
+                    </p>
+                  </div>
                   <div>
-                    <label className="block text-sm font-semibold text-slate-300 mb-2">
-                      Senha de Acesso
+                    <label className="block text-sm font-semibold text-slate-700 mb-2">
+                      Senha
                     </label>
                     <input
                       type="password"
                       value={pwd}
                       onChange={(e) => setPwd(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          if (pwd === CONFIG_PASSWORD) {
-                            setUnlocked(true);
-                            setPwdErr("");
-                          } else {
-                            setPwdErr("Senha incorreta");
-                          }
-                        }
-                      }}
+                      onKeyDown={(e) =>
+                        e.key === "Enter" &&
+                        (pwd === CONFIG_PASSWORD
+                          ? (setUnlocked(true), setPwdErr(""))
+                          : setPwdErr("Senha incorreta"))
+                      }
+                      className="w-full px-4 py-3 border-2 border-slate-300 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition-all"
                       placeholder="Digite a senha"
-                      className="w-full px-4 py-3 bg-slate-900/50 border-2 border-slate-600 rounded-xl text-sm font-medium text-white placeholder:text-slate-500 focus:ring-4 focus:ring-blue-500/50 focus:border-blue-500 transition-all outline-none"
                       autoFocus
                     />
                     {pwdErr && (
-                      <p className="text-sm text-red-400 font-medium mt-2 flex items-center gap-1.5">
-                        <AlertCircle className="w-4 h-4" />
+                      <p className="text-sm text-red-600 mt-2 font-medium">
                         {pwdErr}
                       </p>
                     )}
@@ -500,34 +1233,51 @@ export default function App() {
                       if (pwd === CONFIG_PASSWORD) {
                         setUnlocked(true);
                         setPwdErr("");
-                      } else {
-                        setPwdErr("Senha incorreta");
-                      }
+                      } else setPwdErr("Senha incorreta");
                     }}
-                    className="w-full bg-gradient-to-r from-blue-500 to-cyan-400 hover:from-blue-600 hover:to-cyan-500 text-white py-3 rounded-xl text-sm font-semibold shadow-lg shadow-blue-500/30 hover:shadow-xl transition-all duration-200"
+                    className="w-full bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 text-white px-6 py-3.5 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all"
                   >
                     Desbloquear
                   </button>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {[
-                    { lbl: "URL da API", val: tmpApi, set: setTmpApi },
-                    { lbl: "Código da Filial", val: tmpFil, set: setTmpFil },
-                    { lbl: "Número da Região", val: tmpReg, set: setTmpReg },
-                  ].map(({ lbl, val, set }) => (
-                    <div key={lbl}>
-                      <label className="block text-sm font-semibold text-slate-300 mb-2">
-                        {lbl}
-                      </label>
-                      <input
-                        value={val}
-                        onChange={(e) => set(e.target.value)}
-                        className="w-full px-4 py-3 bg-slate-900/50 border-2 border-slate-600 rounded-xl text-sm font-medium text-white placeholder:text-slate-500 focus:ring-4 focus:ring-blue-500/50 focus:border-blue-500 transition-all outline-none"
-                      />
-                    </div>
-                  ))}
-
+                <div className="space-y-5">
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-2">
+                      URL da API
+                    </label>
+                    <input
+                      type="text"
+                      value={tmpApi}
+                      onChange={(e) => setTmpApi(e.target.value)}
+                      className="w-full px-4 py-3 border-2 border-slate-300 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition-all text-sm"
+                      placeholder="http://host:porta"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-2">
+                      Código da Filial
+                    </label>
+                    <input
+                      type="text"
+                      value={tmpFil}
+                      onChange={(e) => setTmpFil(e.target.value)}
+                      className="w-full px-4 py-3 border-2 border-slate-300 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition-all"
+                      placeholder="1"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-2">
+                      Número da Região
+                    </label>
+                    <input
+                      type="text"
+                      value={tmpReg}
+                      onChange={(e) => setTmpReg(e.target.value)}
+                      className="w-full px-4 py-3 border-2 border-slate-300 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition-all"
+                      placeholder="1"
+                    />
+                  </div>
                   <div className="flex gap-3 pt-2">
                     <button
                       onClick={() => {
@@ -538,24 +1288,20 @@ export default function App() {
                         setTmpFil(filial);
                         setTmpReg(numReg);
                       }}
-                      className="flex-1 px-4 py-3 border-2 border-slate-600 hover:bg-slate-700 rounded-xl text-sm font-semibold text-slate-300 transition-all"
+                      className="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 px-6 py-3.5 rounded-xl font-semibold transition-all"
                     >
                       Cancelar
                     </button>
                     <button
                       onClick={() => {
-                        const safeUrl = normalizeUrl(tmpApi.trim());
-                        setApiBase(safeUrl);
+                        setApiBase(normalizeUrl(tmpApi));
                         setFilial(tmpFil);
                         setNumReg(tmpReg);
-                        localStorage.setItem("apiBase", safeUrl);
-                        localStorage.setItem("filial", tmpFil);
-                        localStorage.setItem("numregiao", tmpReg);
                         setShowCfg(false);
                         setUnlocked(false);
                         setPwd("");
                       }}
-                      className="flex-1 bg-gradient-to-r from-blue-500 to-cyan-400 hover:from-blue-600 hover:to-cyan-500 text-white py-3 rounded-xl text-sm font-semibold shadow-lg shadow-blue-500/30 hover:shadow-xl transition-all duration-200"
+                      className="flex-1 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white px-6 py-3.5 rounded-xl font-semibold shadow-lg hover:shadow-xl transition-all"
                     >
                       Salvar
                     </button>
