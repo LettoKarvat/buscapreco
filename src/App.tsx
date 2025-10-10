@@ -17,27 +17,16 @@ import {
 import { BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 
-/* ========================= Utils de URL ========================= */
+/* ========================= Utils de URL/ngrok ========================= */
+const isNgrokUrl = (u: string) =>
+  /(^https?:\/\/)?([^.]+\.)?ngrok(-free)?\.(app|dev)/i.test(u) ||
+  /(^https?:\/\/)?[a-z0-9-]+\.ngrok\.io/i.test(u);
+
 const normalizeUrl = (u: string) => {
   if (!u) return "";
   const t = u.trim();
   if (/^https?:\/\//i.test(t)) return t;
-  // se for domínio/host simples, tenta http por padrão
-  return `http://${t}`;
-};
-
-// Se a página está em HTTPS e o destino é HTTP, usa o proxy serverless
-const wrapWithProxyIfNeeded = (fullUrl: string) => {
-  try {
-    const pageIsHttps = window.location.protocol === "https:";
-    const destIsHttp = /^http:\/\//i.test(fullUrl);
-    if (pageIsHttps && destIsHttp) {
-      return `/api/proxy?url=${encodeURIComponent(fullUrl)}`;
-    }
-    return fullUrl;
-  } catch {
-    return fullUrl;
-  }
+  return isNgrokUrl(t) ? `https://${t}` : `http://${t}`;
 };
 
 /* =============================== Types =============================== */
@@ -58,14 +47,7 @@ type ProdDetail = {
 };
 
 /* =============================== Consts ============================== */
-// Seu DNS público HTTP (porta com NAT do seu roteador)
-const DEFAULT_API_BASE = "http://7932077a4b6e.sn.mynetname.net:12470";
-// Para testes DENTRO da LAN em build local (http://localhost:5173), pode usar:
-// const DEFAULT_API_BASE = "http://192.168.1.101:5001"
-
-// Mantive esse valor pois existia no seu arquivo original
-const RESET_DELAY_MS = 15_000;
-
+const DEFAULT_API_BASE = "https://inward-pied-katerine.ngrok-free.dev";
 const CONFIG_PASSWORD = "F@ives25";
 
 /* ============================ Format helpers ========================= */
@@ -86,9 +68,11 @@ const fmtDate = (iso: string | null) => {
 };
 
 /* ====================== Helpers fora do componente ==================== */
+// BarcodeDetector com nomes/formatos suportados
 const makeBarcodeDetector = async (): Promise<any | null> => {
   const W: any = window as any;
   if (!("BarcodeDetector" in W)) return null;
+
   const desired = [
     "ean_13",
     "ean_8",
@@ -104,6 +88,7 @@ const makeBarcodeDetector = async (): Promise<any | null> => {
     "pdf417",
     "aztec",
   ];
+
   try {
     const supported: string[] =
       (await W.BarcodeDetector.getSupportedFormats?.()) || [];
@@ -117,10 +102,12 @@ const makeBarcodeDetector = async (): Promise<any | null> => {
   }
 };
 
+// Carrega Tesseract via CDN (evita erro do Vite/Capacitor)
 const loadTesseractFromCDN = async (): Promise<any | null> => {
   const W: any = window as any;
   if (W.Tesseract) return W.Tesseract;
   try {
+    // @vite-ignore impede o Vite de tentar resolver localmente
     await import(
       /* @vite-ignore */ "https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"
     );
@@ -161,7 +148,7 @@ export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null);
   const mediaTrackRef = useRef<MediaStreamTrack | null>(null);
-  const imageCaptureRef = useRef<any>(null);
+  const imageCaptureRef = useRef<any>(null); // ImageCapture (quando suportado)
 
   const [scanning, setScanning] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
@@ -169,11 +156,13 @@ export default function App() {
   const [cameraErr, setCameraErr] = useState("");
   const [needsGesture, setNeedsGesture] = useState(false);
 
+  // Ultra / BarcodeDetector
   const [ultraMode, setUltraMode] = useState(true);
   const bdRef = useRef<any>(null);
   const roiCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const processingRef = useRef(false);
 
+  // Zoom
   const [zoomSupported, setZoomSupported] = useState(false);
   const [zoomRange, setZoomRange] = useState<{
     min: number;
@@ -185,11 +174,13 @@ export default function App() {
   const lastTextRef = useRef<string>("");
   const [lastCode, setLastCode] = useState<string>("");
 
+  // Resultado
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [product, setProduct] = useState<ProdDetail | null>(null);
   const [animKey, setAnimKey] = useState(0);
 
+  // Controle anti-loop e watchdog
   const lastHitAtRef = useRef<number>(0);
 
   /* ============================ Helpers câmera ========================= */
@@ -230,6 +221,7 @@ export default function App() {
     v.playsInline = true;
     v.setAttribute("playsinline", "true");
     v.setAttribute("autoplay", "");
+
     for (let i = 0; i < 3; i++) {
       try {
         await v.play();
@@ -277,9 +269,11 @@ export default function App() {
     return (byLabel || devices[devices.length - 1]).deviceId;
   };
 
+  // getUserMedia com FALLBACK PROGRESSIVO (4K -> 1440p -> 1080p -> 720p -> 480p -> padrão)
   const quickPreview = useCallback(
     async (deviceId?: string) => {
       const v = await waitForVideoRef();
+
       const baseWithDevice: MediaTrackConstraints | undefined = deviceId
         ? { deviceId: { exact: deviceId } }
         : undefined;
@@ -337,6 +331,8 @@ export default function App() {
         },
         { audio: false, video: true },
       ];
+
+      // tenta também sem deviceId se o exact falhar
       if (baseWithDevice) {
         profiles.push(
           {
@@ -351,6 +347,7 @@ export default function App() {
           { audio: false, video: true }
         );
       }
+
       let lastErr: any = null;
       for (const c of profiles) {
         try {
@@ -359,6 +356,7 @@ export default function App() {
           const track = stream.getVideoTracks?.()[0] || null;
           mediaTrackRef.current = track;
 
+          // Habilita ImageCapture (Captura HQ) quando suportado
           if (track && "ImageCapture" in window) {
             try {
               // @ts-ignore
@@ -385,6 +383,7 @@ export default function App() {
     [ensureVideoPlay]
   );
 
+  // applyConstraints “safe”
   const safeApply = async (obj: any) => {
     const track = mediaTrackRef.current;
     if (!track) return;
@@ -400,6 +399,7 @@ export default function App() {
 
       try {
         const caps: any = track.getCapabilities?.() || {};
+
         setTorchSupported(Boolean(caps.torch));
 
         if (
@@ -462,6 +462,7 @@ export default function App() {
     } catch {}
   }, []);
 
+  /* ================== Utils de luminância (auto-torch) ================== */
   const measureBrightness = (v: HTMLVideoElement) => {
     const w = Math.max(64, Math.floor(v.videoWidth * 0.25));
     const h = Math.max(48, Math.floor(v.videoHeight * 0.25));
@@ -488,9 +489,11 @@ export default function App() {
     return sum / (d.length / 4) / 255; // 0..1
   };
 
+  /* ===================== Scanner: Ultra (BarcodeDetector) ============== */
   const startBDLoop = useCallback(() => {
     const v = videoRef.current as any;
     if (!v || !bdRef.current) return;
+
     const raf = v.requestVideoFrameCallback
       ? (cb: Function) => v.requestVideoFrameCallback(() => cb())
       : (cb: Function) => setTimeout(() => cb(), 16);
@@ -512,15 +515,17 @@ export default function App() {
           return;
         }
 
+        // ROI central (80% x 60%)
         const rw = Math.floor(vw * 0.8);
         const rh = Math.floor(vh * 0.6);
         const rx = Math.floor((vw - rw) / 2);
         const ry = Math.floor((vh - rh) / 2);
 
         let canvas = roiCanvasRef.current;
-        if (!canvas)
-          (canvas = document.createElement("canvas")),
-            (roiCanvasRef.current = canvas);
+        if (!canvas) {
+          canvas = document.createElement("canvas");
+          roiCanvasRef.current = canvas;
+        }
         canvas.width = rw;
         canvas.height = rh;
         const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
@@ -539,6 +544,7 @@ export default function App() {
             fetchProduct(code);
           }
         } else {
+          // auto-torch liga/desliga conforme ambiente
           try {
             const bright = measureBrightness(v);
             if (bright < 0.22 && torchSupported && !torchOn) {
@@ -549,14 +555,17 @@ export default function App() {
           } catch {}
         }
       } catch {
+        // ignora erros por frame
       } finally {
         processingRef.current = false;
         raf(step);
       }
     };
+
     raf(step);
   }, [scanning, torchSupported, torchOn, toggleTorch]);
 
+  /* ======================= Scanner: ZXing (fallback) =================== */
   const startZXing = useCallback(async () => {
     const hints = new Map();
     hints.set(DecodeHintType.POSSIBLE_FORMATS, [
@@ -581,7 +590,7 @@ export default function App() {
     const reader = new BrowserMultiFormatReader(hints, 160);
     codeReaderRef.current = reader;
 
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 200)); // deixa focar
     await reader.decodeFromVideoElement(videoRef.current!, (res) => {
       const txt = res?.getText?.()?.trim();
       if (txt && txt !== lastTextRef.current) {
@@ -593,6 +602,7 @@ export default function App() {
     });
   }, []);
 
+  /* =================== Captura HQ / OCR automáticos ==================== */
   const runOCRDigits = useCallback(
     async (bitmap: ImageBitmap): Promise<string | null> => {
       try {
@@ -607,6 +617,7 @@ export default function App() {
           tessedit_pageseg_mode: "6",
         });
 
+        // converte bitmap para canvas
         const c = document.createElement("canvas");
         c.width = bitmap.width;
         c.height = bitmap.height;
@@ -619,6 +630,7 @@ export default function App() {
         await worker.terminate();
 
         const digits = (text || "").replace(/\D+/g, "");
+        // aceita EAN/UPC comuns (8–14), mas deixo 18 pra pegar variações impressas
         if (digits.length >= 8 && digits.length <= 18) return digits;
         return null;
       } catch {
@@ -646,6 +658,7 @@ export default function App() {
 
         const bitmap = await createImageBitmap(blob);
 
+        // 1) tenta BD nativo
         if (bdRef.current) {
           try {
             const codes = await bdRef.current.detect(bitmap);
@@ -663,6 +676,7 @@ export default function App() {
           } catch {}
         }
 
+        // 2) OCR de dígitos (último recurso)
         const digits = await runOCRDigits(bitmap);
         if (digits) {
           lastTextRef.current = digits;
@@ -682,15 +696,18 @@ export default function App() {
     [torchOn, runOCRDigits]
   );
 
+  // Watchdog: se não encontrar nada, tenta HQ e ajusta zoom
   useEffect(() => {
     if (!scanning) return;
     const id = setInterval(async () => {
       const now = Date.now();
       const idle = now - (lastHitAtRef.current || now);
+      // depois de 1500ms sem hit, tenta HQ (se suportado)
       if (idle > 1500) {
         await captureHQ(true);
-        lastHitAtRef.current = Date.now();
+        lastHitAtRef.current = Date.now(); // evita loop
       }
+      // leve incremento de zoom enquanto não acha, se tiver suporte
       if (zoomSupported && zoomRange && zoom != null && idle > 900) {
         const next = Math.min(zoomRange.max, zoom + (zoomRange.step || 0.1));
         if (next > zoom) applyZoom(next);
@@ -699,6 +716,7 @@ export default function App() {
     return () => clearInterval(id);
   }, [scanning, captureHQ, zoomSupported, zoomRange, zoom, applyZoom]);
 
+  /* =================== Start Camera (Auto, sem botões) ================= */
   const startCamera = useCallback(async () => {
     setCameraErr("");
     setError("");
@@ -713,6 +731,7 @@ export default function App() {
       setScanning(true);
       await waitForVideoRef();
 
+      // tenta pegar a traseira; se falhar, segue sem deviceId
       let deviceId: string | undefined = undefined;
       try {
         deviceId = await pickBackCamera();
@@ -727,7 +746,7 @@ export default function App() {
         const bd = await makeBarcodeDetector();
         if (bd) {
           bdRef.current = bd;
-          await new Promise((r) => setTimeout(r, 150));
+          await new Promise((r) => setTimeout(r, 150)); // deixa focar
           startBDLoop();
         } else {
           await startZXing();
@@ -756,7 +775,7 @@ export default function App() {
     startZXing,
   ]);
 
-  /* ======================= API produto (via proxy se precisar) ========= */
+  /* ======================= API produto (flexível) ====================== */
   const fetchProduct = async (code: string) => {
     const c = (code || "").trim();
     if (!c) return;
@@ -766,22 +785,25 @@ export default function App() {
     setProduct(null);
     setAnimKey((k) => k + 1);
 
-    const rawUrl =
+    const url =
       `${apiBase}/test-api/product/details` +
       `?produto=${encodeURIComponent(c)}` +
       `&codfilial=${encodeURIComponent(filial)}` +
       `&numregiao=${encodeURIComponent(numReg)}` +
       `&with_price=1`;
 
-    const url = wrapWithProxyIfNeeded(rawUrl);
-
     try {
-      const res = await fetch(url);
+      const headers: Record<string, string> = {};
+      if (isNgrokUrl(apiBase)) headers["ngrok-skip-browser-warning"] = "true";
+
+      const res = await fetch(url, { headers });
       const body = await res.text();
+
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}\n${body}`);
 
       const data = JSON.parse(body);
       const row: ProdDetail = Array.isArray(data) ? data[0] : data;
+
       setProduct(row || null);
     } catch (e: any) {
       setError(e?.message || "Erro ao buscar produto");
@@ -805,9 +827,11 @@ export default function App() {
     };
   }, [ensureVideoPlay]);
 
+  // **AUTO-START**: inicia assim que monta
   useEffect(() => {
     startCamera();
-  }, []); // auto-start
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const videoMaxH = "70vh";
 
@@ -832,6 +856,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-3">
+            {/* Toggle Modo Ultra (continua automático, só troca o engine) */}
             <label className="flex items-center gap-2 text-sm text-slate-700">
               <input
                 type="checkbox"
@@ -860,19 +885,9 @@ export default function App() {
         </div>
       </header>
 
-      {/* Aviso se estiver em HTTPS usando um endpoint HTTP (sem proxy) */}
-      {window.location.protocol === "https:" && /^http:\/\//i.test(apiBase) && (
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 mt-4">
-          <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
-            O site está em HTTPS e a API em HTTP. As chamadas serão roteadas via{" "}
-            <code>/api/proxy</code> da Vercel para evitar bloqueio de mixed
-            content.
-          </div>
-        </div>
-      )}
-
       {/* Main */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 flex flex-col gap-4">
+        {/* Campo manual (continua, mas leitura principal é automática) */}
         <div className="bg-white rounded-2xl shadow-lg border border-slate-200 p-4">
           <label className="block text-xs font-semibold text-slate-600 mb-1">
             Teste manual (digite o código e pressione Enter)
@@ -902,6 +917,7 @@ export default function App() {
               onPlay={() => setNeedsGesture(false)}
             />
 
+            {/* Moldura + status */}
             <div className="absolute inset-0 pointer-events-none">
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-48 border-4 border-blue-500 rounded-2xl shadow-2xl" />
               {!needsGesture && (
@@ -916,6 +932,7 @@ export default function App() {
               )}
             </div>
 
+            {/* Overlay de gesto obrigatório (sem botão dedicado) */}
             {needsGesture && (
               <div
                 className="absolute inset-0 bg-black/60 flex items-center justify-center cursor-pointer"
@@ -929,6 +946,7 @@ export default function App() {
               </div>
             )}
 
+            {/* Controles mínimos (somente torch e parar) */}
             <div className="absolute bottom-4 right-4 flex gap-2">
               {torchSupported && (
                 <button
@@ -972,6 +990,7 @@ export default function App() {
           </div>
         </div>
 
+        {/* Último código */}
         {lastCode && (
           <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-center gap-3">
             <div className="bg-blue-500 p-2 rounded-lg">
@@ -988,6 +1007,7 @@ export default function App() {
           </div>
         )}
 
+        {/* Loading */}
         {loading && (
           <div className="bg-white rounded-xl shadow-md p-8 flex flex-col items-center justify-center">
             <Loader2 className="w-12 h-12 text-blue-500 animate-spin mb-4" />
@@ -995,6 +1015,7 @@ export default function App() {
           </div>
         )}
 
+        {/* Erro */}
         {error && !loading && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-5 flex items-start gap-3">
             <AlertCircle className="w-6 h-6 text-red-500 flex-shrink-0 mt-0.5" />
@@ -1007,6 +1028,7 @@ export default function App() {
           </div>
         )}
 
+        {/* Resultado */}
         {product && !loading && (
           <div
             key={animKey}
@@ -1244,7 +1266,7 @@ export default function App() {
                       value={tmpApi}
                       onChange={(e) => setTmpApi(e.target.value)}
                       className="w-full px-4 py-3 border-2 border-slate-300 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 outline-none transition-all text-sm"
-                      placeholder="http://host:porta"
+                      placeholder="https://exemplo.ngrok-free.dev"
                     />
                   </div>
                   <div>
