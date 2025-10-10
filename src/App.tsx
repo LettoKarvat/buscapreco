@@ -17,17 +17,13 @@ import {
 import { BrowserMultiFormatReader } from "@zxing/browser";
 import { BarcodeFormat, DecodeHintType } from "@zxing/library";
 
-/* ========================= Utils de URL/ngrok ========================= */
-const isNgrokUrl = (u: string) =>
-  /(^https?:\/\/)?([^.]+\.)?ngrok(-free)?\.(app|dev)/i.test(u) ||
-  /(^https?:\/\/)?[a-z0-9-]+\.ngrok\.io/i.test(u);
-
+/* ========================= Utils de URL ========================= */
 const normalizeUrl = (u: string) => {
   if (!u) return "";
   const t = u.trim();
   if (/^https?:\/\//i.test(t)) return t;
   // se for domínio/host simples, tenta http por padrão
-  return isNgrokUrl(t) ? `https://${t}` : `http://${t}`;
+  return `http://${t}`;
 };
 
 // Se a página está em HTTPS e o destino é HTTP, usa o proxy serverless
@@ -65,7 +61,7 @@ type ProdDetail = {
 // Seu DNS público HTTP (porta com NAT do seu roteador)
 const DEFAULT_API_BASE = "http://7932077a4b6e.sn.mynetname.net:12470";
 // Para testes DENTRO da LAN em build local (http://localhost:5173), pode usar:
-// const DEFAULT_API_BASE = "http://192.168.1.101:5001";
+// const DEFAULT_API_BASE = "http://192.168.1.101:5001"
 
 // Mantive esse valor pois existia no seu arquivo original
 const RESET_DELAY_MS = 15_000;
@@ -780,10 +776,7 @@ export default function App() {
     const url = wrapWithProxyIfNeeded(rawUrl);
 
     try {
-      const headers: Record<string, string> = {};
-      if (isNgrokUrl(apiBase)) headers["ngrok-skip-browser-warning"] = "true";
-
-      const res = await fetch(url, { headers });
+      const res = await fetch(url);
       const body = await res.text();
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}\n${body}`);
 
